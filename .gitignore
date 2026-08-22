@@ -16,3 +16,6 @@ out/
 !.env.example
 
 lib/
+
+# npm dependencies (@openzeppelin/contracts)
+node_modules/

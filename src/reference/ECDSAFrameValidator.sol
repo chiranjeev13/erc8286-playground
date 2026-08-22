@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CC0-1.0
 pragma solidity ^0.8.21;
 
-import {IFrameValidator} from "./IFrameValidator.sol";
+import {IFrameValidator} from "../interfaces/IFrameValidator.sol";
 
 contract ECDSAFrameValidator is IFrameValidator {
     uint8 internal constant APPROVE_NONE = 0x0;

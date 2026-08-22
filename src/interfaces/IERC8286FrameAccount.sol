@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 pragma solidity ^0.8.21;
 
-import {IERC7579AccountConfig, IERC7579ModuleConfig} from "../interfaces/IERC7579Account.sol";
+import {
+    IERC7579AccountConfig,
+    IERC7579ModuleConfig
+} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 
 /// @notice ERC-8286 account interface: ERC-7579 config + EIP-8141 verify flow.
 interface IERC8286FrameAccount is IERC7579AccountConfig, IERC7579ModuleConfig {

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 pragma solidity ^0.8.21;
 
-import {IFrameValidator} from "./IFrameValidator.sol";
-import {IERC8286FrameAccount} from "./IERC8286FrameAccount.sol";
-import {IERC7579Module} from "../interfaces/IERC7579Module.sol";
+import {IFrameValidator} from "../interfaces/IFrameValidator.sol";
+import {IERC8286FrameAccount} from "../interfaces/IERC8286FrameAccount.sol";
+import {IERC7579Module} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 
 // IERC7579Module, and the IERC7579AccountConfig / IERC7579ModuleConfig surfaces inherited
-// via IERC8286FrameAccount, are as defined in ERC-7579.
+// via IERC8286FrameAccount, come from OpenZeppelin's ERC-7579 interfaces
+// (@openzeppelin/contracts/interfaces/draft-IERC7579.sol).
 
 contract ERC8286FrameAccount is IERC8286FrameAccount {
     uint8 internal constant APPROVE_NONE = 0x0;

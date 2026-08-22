@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CC0-1.0
 pragma solidity ^0.8.21;
 
-import {IERC7579Module} from "../interfaces/IERC7579Module.sol";
+import {IERC7579Module} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 
 /// @notice EIP-8141 frame validator (ERC-8286 module type id 11).
 /// A module MAY additionally be an ERC-7579 validator (type id 1) and serve both targets.

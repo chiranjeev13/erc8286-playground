@@ -175,8 +175,6 @@ console.log(JSON.stringify(sim, null, 2));
 
 if (!sim.valid) {
   console.log(`\nINVALID: ${sim.violation}`);
-  // The prefix check is a local mempool policy, not consensus: a builder may still include
-  // the transaction. FORCE=1 submits anyway, to see what this node's mempool says.
   if (!(force && submit)) process.exit(1);
   console.log("FORCE: submitting anyway");
 }

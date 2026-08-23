@@ -12,6 +12,7 @@
 //            -> the account that frame[0] just deployed validates and APPROVEs.
 //   frame[2] SENDER,  target = recipient, value = amount
 //
+//
 // The account pays for all of it, including its own deployment, so it must hold ETH before
 // the transaction runs -- possible because the address is known in advance. This script funds
 // it with an ordinary transfer first (a real deployment would have been funded long before).
@@ -19,9 +20,12 @@
 // No factory is involved: frame[0] targets the EIP-7997 predeploy directly, and the address
 // and those calldata bytes are derived locally in scripts/lib/accounts.ts.
 //
-// What it sends is set by the constants below. Note the frame gas limits: EIP-8141 caps the
-// whole validation prefix -- every frame before the first SENDER frame, so frames 0 and 1
-// both -- at MAX_VERIFY_GAS = 500_000 on this devnet.
+// What it sends is set by the constants below, and nothing here second-guesses the node: the
+// transaction is built and handed to `ethrex_simulateFrameTransaction` whatever the numbers
+// look like. Worth knowing while choosing the frame gas limits, though: EIP-8141 budgets the
+// whole validation prefix -- every frame before the first SENDER frame, so frames 0 and 1 both
+// -- and this devnet enforces that as one 500_000 limit named MAX_VERIFY_GAS. See the README
+// for what the deployment actually costs against it.
 import {
   encodeFunctionData,
   formatEther,
@@ -41,19 +45,6 @@ import { APPROVAL_SCOPES, EXECUTION_MODES } from "./lib/policy.js";
 const APPROVE_SCOPE_EXECUTION_AND_PAYMENT = 0x03;
 const NONCE_MANAGER = "0x0000000000000000000000000000000000008250";
 
-/**
- * EIP-8141's budget for the whole validation prefix -- every frame before the first SENDER
- * frame, so frames 0 and 1 together. ethrex reports overruns as
- * `prefix gas budget exceeded: N > 500000 (MAX_VERIFY_GAS)`.
- */
-const MAX_VERIFY_GAS = 500_000n;
-
-/**
- * What deploying this account actually costs on the devnet, measured through the predeploy.
- * Kept here because it is the reason this script cannot succeed as written, and the number is
- * expensive to rediscover.
- */
-const MEASURED_DEPLOY_GAS = 1_476_689n;
 
 const ACCOUNT_ABI = [
   { type: "function", name: "verify", inputs: [{ type: "bytes" }], outputs: [] },
@@ -72,7 +63,7 @@ const deployGas = 2_000_000n;
 /** frame[1], the validation. */
 const verifyGas = 400_000n;
 /** Submit it, rather than simulating only. */
-const submit: boolean = false;
+const submit: boolean = true;
 /** Submit even if the prefix simulation says invalid. */
 const force: boolean = false;
 
@@ -96,37 +87,9 @@ const { address: account, deployCalldata } = deriveAccount({
   modes,
 });
 
-// Checked before anything is spent: the prefix budget is a local fact, and this script used
-// to pre-fund an account before discovering the transaction could never be admitted.
-if (deployGas + verifyGas > MAX_VERIFY_GAS) {
-  console.log(
-    `\nprefix gas ${deployGas} + ${verifyGas} = ${deployGas + verifyGas} exceeds ` +
-      `MAX_VERIFY_GAS ${MAX_VERIFY_GAS}; ethrex would refuse it.`,
-  );
-}
-if (MEASURED_DEPLOY_GAS > MAX_VERIFY_GAS) {
-  // No choice of frame gas limits fixes this: deploying the account costs more than the whole
-  // prefix is allowed to spend, most of it the ERC-1967 proxy (690k before a single config
-  // slot is written) plus seven storage writes in `initialize`. Landing example 1b needs a
-  // leaner account -- an ERC-1167 clone and a packed configuration -- not different limits.
-  console.log(
-    `deploying this account measures ${MEASURED_DEPLOY_GAS} gas against a ${MAX_VERIFY_GAS} ` +
-      `prefix budget, so no frame gas limits make it admissible. See the README.`,
-  );
-  if (!force) {
-    console.log("nothing spent. set `force` to build and simulate it anyway.");
-    process.exit(1);
-  }
-  console.log("force: continuing, which will pre-fund the account and then be rejected");
-}
-
 const existing = await client.getCode({ address: account });
 console.log(`account   ${account}  (index ${index})`);
 console.log(`code      ${existing === undefined ? "none yet -- frame[0] will deploy it" : `already ${(existing.length - 2) / 2} bytes`}`);
-if (existing !== undefined && !force) {
-  console.log("nothing to demonstrate: pick a fresh `index`, or set `force` to send anyway");
-  process.exit(1);
-}
 
 // The account pays for its own deployment, so it needs a balance while it is still codeless.
 let balance = await client.getBalance({ address: account });

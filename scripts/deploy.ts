@@ -47,17 +47,34 @@ if (![1, 2, 3].includes(scopes)) {
   throw new Error(`APPROVAL_SCOPES must be 1, 2, or 3 (got ${scopes})`);
 }
 
-// Which SENDER-frame shapes the account will authorize: 0x1 single, 0x2 single-atomic,
-// 0x4 batch, 0x8 batch-atomic. Policy declarations, not capabilities -- the protocol does
-// the batching, so this is what the account is willing to approve.
-const modes = Number(process.env.EXECUTION_MODES ?? env.EXECUTION_MODES ?? 0xf);
-if (modes < 1 || modes > 0xf) {
-  throw new Error(`EXECUTION_MODES must be 1..15 (got ${modes})`);
+// Which SENDER-frame shapes the account will authorize, as the ERC-7579-layout mode words
+// themselves. Policy declarations, not capabilities -- the protocol does the batching, so
+// this is what the account is willing to approve.
+const FRAME_MODES: Record<string, string> = {
+  single: `0x0201${"00".repeat(30)}`,
+  "single-atomic": `0x0200${"00".repeat(30)}`,
+  batch: `0x0301${"00".repeat(30)}`,
+  "batch-atomic": `0x0300${"00".repeat(30)}`,
+};
+
+const requested = (process.env.EXECUTION_MODES ?? env.EXECUTION_MODES ?? "all")
+  .split(",")
+  .map((m) => m.trim())
+  .filter((m) => m !== "");
+const names = requested.length === 1 && requested[0] === "all" ? Object.keys(FRAME_MODES) : requested;
+for (const name of names) {
+  if (FRAME_MODES[name] === undefined) {
+    throw new Error(
+      `EXECUTION_MODES: unknown mode "${name}". Use "all" or a comma-separated list of: ` +
+        Object.keys(FRAME_MODES).join(", "),
+    );
+  }
 }
+const modes = names.map((n) => FRAME_MODES[n]!);
 
 const account = await deploy("ERC8286FrameAccount", [validator, owner, scopes, modes]);
 
 console.log(`account owner (ECDSA signer) = ${owner}`);
-console.log(`approval scopes = 0x${scopes.toString(16)}  execution modes = 0x${modes.toString(16)}`);
+console.log(`approval scopes = 0x${scopes.toString(16)}  execution modes = ${names.join(",")}`);
 console.log("\nfund the account before sending a frame transaction -- it pays its own gas:");
 console.log(`  cast send ${account} --value 0.05ether --private-key $DEVNET_PRIVATE_KEY --rpc-url ${env.DEVNET_RPC}`);

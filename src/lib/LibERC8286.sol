@@ -1,23 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 pragma solidity ^0.8.21;
 
-/// @notice Library for handling ERC-8286 approval modes, SENDER-frame execution modes, and
-/// EIP-8141 frame introspection.
-/// @dev Every function is `internal`, so it inlines into the caller. That matters here: a
-/// validator module is reached by `DELEGATECALL` and runs inside the account's context, and
-/// a library reached by `DELEGATECALL` of its own would break that. It also keeps the
-/// introspection opcodes out of an external call during a `VERIFY` frame.
-///
-/// The introspection wrappers require a compiler that knows the EIP-8141 instructions, and
-/// they halt exceptionally outside a type-0x06 frame transaction.
+/// @notice ERC-8286 approval modes, SENDER-frame execution modes, and EIP-8141 frame
+/// introspection.
+/// @dev All functions are `internal`. The introspection wrappers need an EIP-8141-aware
+/// compiler and halt exceptionally outside a type-0x06 frame transaction.
 library LibERC8286 {
-    /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
-    /*                       CUSTOM ERRORS                        */
-    /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
-
-    /// @dev Cannot decode the VERIFY frame's validator payload.
-    error DecodingError();
-
     /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
     /*                      APPROVAL MODES                        */
     /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
@@ -28,8 +16,8 @@ library LibERC8286 {
     /// @dev The account approves paying the transaction's total gas cost.
     uint8 internal constant APPROVE_PAYMENT = 0x1;
 
-    /// @dev The account approves subsequent frames acting on its behalf as `sender`.
-    /// Only valid when the frame's resolved target is `tx.sender`.
+    /// @dev Approves later frames acting as `tx.sender`. Requires the frame's resolved
+    /// target to be `tx.sender`.
     uint8 internal constant APPROVE_EXECUTION = 0x2;
 
     /// @dev Both payment and execution.
@@ -42,8 +30,7 @@ library LibERC8286 {
     /*                        MODULE TYPES                        */
     /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
 
-    /// @dev ERC-8286 frame validator. Distinct from ERC-7579's `validateUserOp` validators
-    /// (type id 1); a module may be both. Value TBD in the draft.
+    /// @dev ERC-8286 frame validator module type id (TBD in the draft).
     uint256 internal constant MODULE_TYPE_FRAME_VALIDATOR = 11;
 
     /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
@@ -60,16 +47,16 @@ library LibERC8286 {
     /*                     EXECUTION MODES                        */
     /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:°.´:•˚°.*°.˚:*.´+°.•*.+°.•°:´*.•*/
 
-    /// @dev Exactly one SENDER frame. Extends ERC-7579's callType encoding.
+    /// @dev Exactly one SENDER frame.
     bytes1 internal constant CALLTYPE_FRAME_SINGLE = 0x02;
 
-    /// @dev Multiple SENDER frames. Extends ERC-7579's callType encoding.
+    /// @dev Multiple SENDER frames.
     bytes1 internal constant CALLTYPE_FRAME_BATCH = 0x03;
 
-    /// @dev Revert-all: the frame belongs to an atomic-batch group.
+    /// @dev Revert-all: the frame is an atomic-batch member.
     bytes1 internal constant EXECTYPE_DEFAULT = 0x00;
 
-    /// @dev Try: the frame is not part of an atomic batch.
+    /// @dev Try: the frame is not in an atomic batch.
     bytes1 internal constant EXECTYPE_TRY = 0x01;
 
     /// @dev One standalone SENDER frame.
@@ -88,25 +75,12 @@ library LibERC8286 {
     bytes32 internal constant FRAME_MODE_BATCH_ATOMIC =
         0x0300000000000000000000000000000000000000000000000000000000000000;
 
-    /// @dev One bit per frame mode, so a *set* of modes fits in a single word.
-    ///
-    /// These are not the modes themselves: `FRAME_MODE_SINGLE` is the normative bytes32 that
-    /// `supportsExecutionMode` accepts, while `FRAME_MODE_SINGLE_BIT` is this library's
-    /// one-bit stand-in for it. Same shape, different representation, and only the bytes32
-    /// form appears in the standard -- the bits are an implementation convenience for
-    /// storing and comparing sets (see `presentedModeBits`).
-    uint8 internal constant FRAME_MODE_SINGLE_BIT = 0x1;
-    uint8 internal constant FRAME_MODE_SINGLE_ATOMIC_BIT = 0x2;
-    uint8 internal constant FRAME_MODE_BATCH_BIT = 0x4;
-    uint8 internal constant FRAME_MODE_BATCH_ATOMIC_BIT = 0x8;
-    uint8 internal constant FRAME_MODE_BITS_MASK = 0xF;
-
     /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
     /*                      MODE OPERATIONS                       */
     /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
 
-    /// @dev Encodes a frame mode per ERC-7579's mode layout: callType in byte 0, execType in
-    /// byte 1, every remaining byte zero. Frame modes carry no selector or payload.
+    /// @dev Encodes a mode per ERC-7579's layout: callType in byte 0, execType in byte 1,
+    /// every remaining byte zero.
     function encodeFrameMode(bytes1 callType, bytes1 execType)
         internal
         pure
@@ -127,27 +101,14 @@ library LibERC8286 {
         return mode[1];
     }
 
-    /// @dev Returns the single bit identifying `mode`, or zero if `mode` is not one of the
-    /// four frame modes.
-    ///
-    /// Compared as whole words, not callType and execType byte by byte: the layout reserves
-    /// every remaining byte as zero, so a mode carrying a modeSelector or modePayload is a
-    /// different mode. ERC-7579's own execute modes also return zero.
-    function modeBit(bytes32 mode) internal pure returns (uint8) {
-        if (mode == FRAME_MODE_SINGLE) return FRAME_MODE_SINGLE_BIT;
-        if (mode == FRAME_MODE_SINGLE_ATOMIC) return FRAME_MODE_SINGLE_ATOMIC_BIT;
-        if (mode == FRAME_MODE_BATCH) return FRAME_MODE_BATCH_BIT;
-        if (mode == FRAME_MODE_BATCH_ATOMIC) return FRAME_MODE_BATCH_ATOMIC_BIT;
-        return 0;
-    }
-
-    /// @dev Whether `mode` is one of the four frame modes.
+    /// @dev Whether `mode` is exactly one of the four frame modes. A mode carrying a
+    /// modeSelector or modePayload is not.
     function isFrameMode(bytes32 mode) internal pure returns (bool) {
-        return modeBit(mode) != 0;
+        return mode == FRAME_MODE_SINGLE || mode == FRAME_MODE_SINGLE_ATOMIC
+            || mode == FRAME_MODE_BATCH || mode == FRAME_MODE_BATCH_ATOMIC;
     }
 
-    /// @dev The mode a SENDER frame presents, given whether the transaction has more than
-    /// one SENDER frame and whether this frame belongs to an atomic batch.
+    /// @dev The mode for the given (batch, atomic) pair.
     function frameMode(bool batch, bool atomic) internal pure returns (bytes32) {
         if (atomic) return batch ? FRAME_MODE_BATCH_ATOMIC : FRAME_MODE_SINGLE_ATOMIC;
         return batch ? FRAME_MODE_BATCH : FRAME_MODE_SINGLE;
@@ -164,20 +125,16 @@ library LibERC8286 {
         }
     }
 
-    /// @dev `TXPARAM(0x02)`: `tx.sender`.
-    /// @dev Masked: assigning a full word to an address-typed variable in assembly does not
-    /// clear the upper bits, and those bits would otherwise flow into anything that hashes
-    /// or compares the result.
+    /// @dev `TXPARAM(0x02)`: `tx.sender`. Masked, since assembly assignment to an address
+    /// does not clear the upper bits.
     function txSender() internal view returns (address result) {
         assembly {
             result := and(txparam(0x02), 0xffffffffffffffffffffffffffffffffffffffff)
         }
     }
 
-    /// @dev `TXPARAM(0x08)`: the canonical transaction signing hash.
-    ///
-    /// This hash commits the frame data verbatim, so a signature carried *in* frame data
-    /// cannot sign over it -- that construction is a circular fixed point.
+    /// @dev `TXPARAM(0x08)`: the canonical signing hash. Commits frame data verbatim, so a
+    /// signature carried in frame data cannot sign over it.
     function sigHash() internal view returns (bytes32 result) {
         assembly {
             result := txparam(0x08)
@@ -196,6 +153,47 @@ library LibERC8286 {
         assembly {
             result := txparam(0x0a)
         }
+    }
+
+    /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
+    /*                  KEYED NONCES (EIP-8250)                   */
+    /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
+
+    /// @dev `TXPARAM(0x0C)`: the sender's pre-state legacy nonce.
+    function legacyNonce() internal view returns (uint256 result) {
+        assembly {
+            result := txparam(0x0c)
+        }
+    }
+
+    /// @dev `TXPARAM(0x0D)`: `len(tx.nonce_keys)`.
+    function nonceKeyCount() internal view returns (uint256 result) {
+        assembly {
+            result := txparam(0x0d)
+        }
+    }
+
+    /// @dev `TXPARAM(0x0E)`: `keccak256(be32(len) || be32(k0) || ...)` over the key set.
+    function nonceKeysHash() internal view returns (bytes32 result) {
+        assembly {
+            result := txparam(0x0e)
+        }
+    }
+
+    /// @dev `TXPARAM(0x10)`: `tx.nonce_keys[0]`. Key `0` is the linear nonce; any other key
+    /// has its own sequence in the `NONCE_MANAGER` predeploy.
+    function nonceKey0() internal view returns (uint256 result) {
+        assembly {
+            result := txparam(0x10)
+        }
+    }
+
+    /// @dev The validator address in `nonce_keys[0]`. Zero for key `0`, and for any key with
+    /// bits above the low 160.
+    function validatorFromNonceKey() internal view returns (address) {
+        uint256 key = nonceKey0();
+        if (key == 0 || key >> 160 != 0) return address(0);
+        return address(uint160(key));
     }
 
     /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
@@ -264,9 +262,8 @@ library LibERC8286 {
         }
     }
 
-    /// @dev Whether frame `i` belongs to an atomic batch: it carries the flag itself (a
-    /// member at positions i..j-1 of a group), or the preceding frame does (the terminating
-    /// frame j of the group).
+    /// @dev Whether frame `i` is in an atomic batch: it carries the flag, or frame `i - 1`
+    /// does (the group's terminating frame).
     function inAtomicBatch(uint256 i) internal view returns (bool) {
         if (atomicBatchFlag(i)) return true;
         if (i == 0) return false;
@@ -281,63 +278,21 @@ library LibERC8286 {
         }
     }
 
-    /// @dev The set of modes the transaction's SENDER frames present, as a bitmask of
-    /// FRAME_MODE_SINGLE_BIT | FRAME_MODE_SINGLE_ATOMIC_BIT | FRAME_MODE_BATCH_BIT | FRAME_MODE_BATCH_ATOMIC_BIT.
-    ///
-    /// A transaction can present several modes at once -- an atomic group alongside an
-    /// ungrouped frame presents both BATCH_ATOMIC and BATCH -- so every SENDER frame
-    /// contributes. Returns zero when there are no SENDER frames, i.e. nothing to authorize.
-    ///
-    /// An account supports the transaction's SENDER frames when
-    /// `presentedModeBits() & ~supportedModes == 0`.
-    function presentedModeBits() internal view returns (uint8 bits) {
-        uint256 n = frameCount();
-        bool batch = senderFrameCount() > 1;
-        for (uint256 i = 0; i < n; i++) {
-            if (frameModeOf(i) != MODE_SENDER) continue;
-            bits |= modeBit(frameMode(batch, inAtomicBatch(i)));
-        }
+    /// @dev The mode SENDER frame `i` presents. `batch` is `senderFrameCount() > 1`, taken
+    /// as a parameter so a caller walking every frame computes it once.
+    function presentedMode(uint256 i, bool batch) internal view returns (bytes32) {
+        return frameMode(batch, inAtomicBatch(i));
     }
 
     /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
     /*                          APPROVE                           */
     /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
 
-    /// @dev `APPROVE(0, 0, scope)`: commits `scope` and exits the frame successfully.
-    ///
-    /// Never returns. Note EIP-8141 reverts an `APPROVE_PAYMENT` while `sender_approved` is
-    /// false: payment cannot precede the sender's execution approval.
+    /// @dev `APPROVE(0, 0, scope)`: commits `scope` and exits the frame. Never returns.
+    /// Reverts on `APPROVE_PAYMENT` while `sender_approved` is false.
     function approveScope(uint8 scope) internal {
         assembly {
             approve(0, 0, scope)
         }
-    }
-
-    /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
-    /*                     VALIDATOR PAYLOAD                      */
-    /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
-
-    /// @dev Splits a VERIFY frame's payload into the selected validator and the
-    /// validator-specific remainder: `validator(20) || data`.
-    ///
-    /// ERC-8286 does not dictate validator selection; this is the convention this reference
-    /// account uses. Reverts if there is no room for an address.
-    function decodeValidator(bytes calldata payload)
-        internal
-        pure
-        returns (address validator, bytes calldata data)
-    {
-        if (payload.length < 20) revert DecodingError();
-        validator = address(bytes20(payload[0:20]));
-        data = payload[20:];
-    }
-
-    /// @dev Encodes a VERIFY frame payload: `validator(20) || data`.
-    function encodeValidator(address validator, bytes memory data)
-        internal
-        pure
-        returns (bytes memory)
-    {
-        return abi.encodePacked(bytes20(validator), data);
     }
 }

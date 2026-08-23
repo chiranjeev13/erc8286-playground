@@ -15,7 +15,8 @@
 // default code checks the envelope signature), the sender here is an ERC8286FrameAccount:
 //
 //   frame[0] VERIFY (mode 1), target = the account, flags 0x03
-//            data = abi.encodeCall(verify, validator(20) || r(32) || s(32) || v(1))
+//            data = abi.encodeCall(verify, r(32) || s(32) || v(1))
+//            the validator is nonce_keys[0]
 //            -> account.verify() delegatecalls the installed module, masks the returned
 //               scope with the frame's allowed_scope, and APPROVEs.
 //   frame[1] SENDER (mode 2), target = recipient, value = amount
@@ -23,7 +24,18 @@
 //
 // The envelope's `signatures` list is empty: authorization is the account's APPROVE, not an
 // outer signature.
-import { AbiCoder, SigningKey, concat, formatEther, getBytes, hexlify, id } from "ethers";
+import {
+  AbiCoder,
+  SigningKey,
+  concat,
+  formatEther,
+  getBytes,
+  hexlify,
+  id,
+  keccak256,
+  toBeHex,
+  zeroPadValue,
+} from "ethers";
 import { Frame, FrameMode, FrameTx, authDigest, type Hex } from "./lib/frametx.js";
 import { connect, need } from "./lib/connect.js";
 
@@ -104,14 +116,25 @@ const account = need(env, "ERC8286FRAMEACCOUNT_ADDRESS", hint);
 const validator = need(env, "ECDSAFRAMEVALIDATOR_ADDRESS", hint);
 const key = need(env, "DEVNET_PRIVATE_KEY", "generate one with `cast wallet new`");
 
-const nonce = await provider.getTransactionCount(account);
+// EIP-8250: the account selects its validator from nonce_keys[0], and the key set is part
+// of the signed envelope, so a relayer cannot substitute another validator.
+const nonceKeys = [BigInt(validator)];
+
+// A keyed nonce has its own sequence in NONCE_MANAGER at keccak256(pad32(sender) || pad32(key)).
+const NONCE_MANAGER = "0x0000000000000000000000000000000000008250";
+const nonceSlot = keccak256(
+  concat([zeroPadValue(account, 32), zeroPadValue(toBeHex(nonceKeys[0]!), 32)]),
+);
+const nonce = Number(
+  BigInt(await provider.send("eth_getStorageAt", [NONCE_MANAGER, nonceSlot, "latest"])),
+);
 const balance = await provider.getBalance(account);
 const block = await provider.getBlock("latest");
 const maxPriorityFee = 1_000_000_000n;
 const maxFee = (block?.baseFeePerGas ?? 0n) * 2n + maxPriorityFee;
 
 console.log(`account   ${account}  balance ${formatEther(balance)} ETH  nonce ${nonce}`);
-console.log(`validator ${validator}  owner ${wallet.address}`);
+console.log(`validator ${validator}  owner ${wallet.address}  nonce_seq ${nonce}`);
 
 // The SENDER frames are what the validator's digest commits to, so they are fixed before
 // the VERIFY frame's data (which carries the signature over that digest) can exist.
@@ -122,7 +145,13 @@ const senderFrame = new Frame({
   value: amount,
 });
 
-const digest = authDigest({ chainId, nonce, sender: account, senderFrames: [senderFrame] });
+const digest = authDigest({
+  chainId,
+  nonce,
+  sender: account,
+  nonceKeys,
+  senderFrames: [senderFrame],
+});
 const sig = new SigningKey(key).sign(digest);
 // ECDSAFrameValidator reads r(32) || s(32) || v(1) and hands them to ecrecover, which wants
 // v in {27,28} -- which is what ethers' `v` already is.
@@ -136,7 +165,7 @@ if (badSig) {
 
 // A VERIFY frame's `data` is the calldata of the call to its target, so the account's
 // verify(bytes) is reached through an ordinary ABI-encoded call.
-const payload = concat([validator, frameSig]);
+const payload = frameSig;
 const verifyData = concat([
   VERIFY_SELECTOR,
   AbiCoder.defaultAbiCoder().encode(["bytes"], [payload]),
@@ -144,7 +173,7 @@ const verifyData = concat([
 
 const tx = new FrameTx({
   chainId,
-  nonceKeys: [0],
+  nonceKeys,
   nonceSeq: nonce,
   sender: account,
   frames: [

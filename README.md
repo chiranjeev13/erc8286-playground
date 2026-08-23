@@ -69,7 +69,7 @@ must follow.
 [`src/lib/LibERC8286.sol`](src/lib/LibERC8286.sol) is the counterpart to solady's
 `LibERC7579`: approval-mode and frame-mode constants, mode encode/decode, typed wrappers over
 the EIP-8141 introspection opcodes (`txparam` / `frameparam` / `framedatacopy` / `approve`),
-and the `validator(20) || data` VERIFY-payload convention.
+and the EIP-8250 keyed-nonce accessors.
 
 Every function is `internal` so it inlines. That is load-bearing: a validator module is
 reached by `DELEGATECALL` and runs in the account's context, and a library reached by its own
@@ -78,6 +78,24 @@ reached by `DELEGATECALL` and runs in the account's context, and a library reach
 The account and the validator hold no inline assembly of their own beyond the ERC-7201 slot
 pointer. `presentedModeBits()` in particular reduces the SENDER-frame shape check to one
 subset test: `presentedModeBits() & ~executionModes == 0`.
+
+### Validator selection
+
+The account picks its frame validator from `nonce_keys[0]` — the [EIP-8250](https://eips.ethereum.org/EIPS/eip-8250)
+keyed nonce, read via `TXPARAM(0x10)`. The key set is part of the signed envelope, so
+selection is bound to the transaction: a relayer cannot substitute a different installed
+validator. `ECDSAFrameValidator` reinforces this by committing `nonce_keys_hash`
+(`TXPARAM(0x0E)`) in its digest, so swapping the validator invalidates the signature.
+
+There is no fallback: a VERIFY frame whose `nonce_keys[0]` does not encode an address is
+rejected, and the entire VERIFY payload belongs to the validator.
+
+A keyed nonce has its own sequence in the `NONCE_MANAGER` predeploy (`0x…8250`) at
+`keccak256(pad32(sender) || pad32(key))`, independent of the account's linear nonce.
+
+> ERC-8286's Validator Selection section cites `TXPARAM(0x0B)` for `nonce_keys[0]`. That index
+> is `len(signatures)` in EIP-8141; EIP-8250 pins `TXPARAM_NONCE_KEY_0 = 0x10`, which is what
+> ethrex ships and what this account reads.
 
 ### Approval scopes
 
@@ -93,11 +111,19 @@ Such an account can still pay for other transactions but can never reconfigure i
 
 ### Execution modes
 
-`executionModes` is the matching bitmask for SENDER-frame shapes — `0x1` single, `0x2`
-single-atomic, `0x4` batch, `0x8` batch-atomic (`EXECUTION_MODES` when deploying, then
-`setExecutionModes`). `supportsExecutionMode` reports against it. These are policy
-declarations rather than capabilities: the protocol performs batching and atomicity with no
-account code, so any account *could* honour all four — this is which ones it *will*.
+`isExecutionModeSupported` is a set of SENDER-frame shapes, keyed by the ERC-7579-layout mode
+word itself — there is no second representation of a mode. Deploy with
+`EXECUTION_MODES=all` or a comma-separated list of `single`, `single-atomic`, `batch`,
+`batch-atomic`; change it later with `setExecutionMode(bytes32 mode, bool supported)`.
+`supportsExecutionMode` is the mapping lookup, so an unregistered word — an ERC-7579 execute
+mode, or a frame mode with a stray payload byte — is simply absent and reports `false`.
+These are policy declarations rather than capabilities: the protocol performs batching and
+atomicity with no account code, so any account *could* honour all four — this is which ones
+it *will*.
+
+`_senderFramesSupported()` walks every SENDER frame and checks the mode it presents, because
+one transaction can present several at once: an atomic group alongside an ungrouped frame
+presents both `BATCH_ATOMIC` and `BATCH`.
 
 Narrowing them is recoverable, unlike approval scopes, but the transaction carrying the
 change must itself present a shape the current setting still supports.
@@ -127,7 +153,8 @@ sender is the account:
 
 ```
 frame[0]  VERIFY (mode 1), target = account, flags 0x03
-          data = abi.encodeCall(verify, validator(20) || r(32) || s(32) || v(1))
+          data = abi.encodeCall(verify, r(32) || s(32) || v(1))
+nonce_keys[0] = the validator address
 frame[1]  SENDER (mode 2), target = recipient, value = amount
 signatures = []          # authorization is the account's APPROVE, not an outer signature
 ```

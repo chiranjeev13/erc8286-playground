@@ -164,27 +164,46 @@ export class FrameTx {
   }
 }
 
+/**
+ * `keccak256(be32(len) || be32(k0) || ...)` over the EIP-8250 key set, i.e. TXPARAM(0x0E).
+ * Because valid `nonce_keys` are strictly increasing, this has one canonical encoding.
+ */
+export function nonceKeysHash(nonceKeys: Numeric[]): Hex {
+  const w = (x: Numeric): Hex => zeroPadValue(toBeHex(BigInt(x)), 32);
+  return keccak256(concat([w(nonceKeys.length), ...nonceKeys.map(w)]));
+}
+
 export interface AuthDigestInput {
   chainId: Numeric;
   nonce: Numeric;
   sender: Numeric;
+  nonceKeys: Numeric[];
   senderFrames: Frame[];
 }
 
 /**
  * Mirror of ECDSAFrameValidator._authDigest().
  *
- * abi.encodePacked(uint256 chainid, uint256 nonce, uint256 sender), then per SENDER frame
- * uint256 target, uint256 value, uint256 len(data), and the raw data. Every scalar is a
- * uint256, so 32 bytes big-endian with no packing.
+ * abi.encodePacked(uint256 chainid, uint256 nonce, uint256 sender, bytes32 nonceKeysHash),
+ * then per SENDER frame uint256 target, uint256 value, uint256 len(data), and the raw data.
+ * Every scalar is a uint256, so 32 bytes big-endian with no packing.
+ *
+ * nonceKeysHash commits the EIP-8250 key set. When the account selects its validator from
+ * nonce_keys[0], that selection is signed over here: swap the validator and the digest moves.
  *
  * A signature in VERIFY-frame data cannot sign over sig_hash -- that hash commits the frame
  * data verbatim, so it would be a circular fixed point. Hence this reconstruction, which
  * covers only what the transaction will actually do.
  */
-export function authDigest({ chainId, nonce, sender, senderFrames }: AuthDigestInput): Hex {
+export function authDigest({
+  chainId,
+  nonce,
+  sender,
+  nonceKeys,
+  senderFrames,
+}: AuthDigestInput): Hex {
   const w = (x: Numeric): Hex => zeroPadValue(toBeHex(BigInt(x)), 32);
-  const parts: Hex[] = [w(chainId), w(nonce), w(sender)];
+  const parts: Hex[] = [w(chainId), w(nonce), w(sender), nonceKeysHash(nonceKeys)];
   for (const f of senderFrames) {
     if (f.target === null) throw new Error("a SENDER frame in the digest needs a resolved target");
     parts.push(w(f.target), w(f.value), w(getBytes(f.data).length), f.data);

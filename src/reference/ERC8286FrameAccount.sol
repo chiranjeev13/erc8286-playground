@@ -4,84 +4,133 @@ pragma solidity ^0.8.21;
 import {IFrameValidator} from "../interfaces/IFrameValidator.sol";
 import {IERC8286FrameAccount} from "../interfaces/IERC8286FrameAccount.sol";
 import {IERC7579Module} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import {LibERC8286} from "../lib/LibERC8286.sol";
 
 // IERC7579Module, and the IERC7579AccountConfig / IERC7579ModuleConfig surfaces inherited
 // via IERC8286FrameAccount, come from OpenZeppelin's ERC-7579 interfaces
 // (@openzeppelin/contracts/interfaces/draft-IERC7579.sol).
 
 contract ERC8286FrameAccount is IERC8286FrameAccount {
-    uint8 internal constant APPROVE_NONE = 0x0;
-    uint8 internal constant APPROVE_PAYMENT = 0x1;
-    uint8 internal constant APPROVE_EXECUTION = 0x2;
-    uint8 internal constant APPROVE_SCOPE_MASK = 0x3;
-
-    // EIP-8141 frame modes (FRAMEPARAM param 0x02).
-    uint256 internal constant MODE_VERIFY = 1;
-    uint256 internal constant MODE_SENDER = 2;
-
-    // ERC-8286 assigns frame validators a new module type id, distinct from ERC-7579's
-    // validateUserOp validators (type id 1). Value 11 is TBD in the draft.
-    uint256 internal constant MODULE_TYPE_FRAME_VALIDATOR = 11;
-
-    // SENDER-frame execution modes (see "SENDER Frame Execution Modes"). callType extends
-    // ERC-7579's encoding with two new values; execType keeps its ERC-7579 meaning.
-    bytes1 internal constant FRAME_CALLTYPE_SINGLE = 0x02; // exactly one SENDER frame
-    bytes1 internal constant FRAME_CALLTYPE_BATCH = 0x03; // multiple SENDER frames
-    bytes1 internal constant EXECTYPE_DEFAULT = 0x00; // revert-all (atomic batch)
-    bytes1 internal constant EXECTYPE_TRY = 0x01; // try (not part of an atomic batch)
+    using LibERC8286 for uint256;
 
     mapping(address => bool) public isValidatorInstalled;
+
+    /// @dev The APPROVE scopes this account is willing to grant, as a bitmask of
+    /// LibERC8286.APPROVE_PAYMENT | LibERC8286.APPROVE_EXECUTION. ERC-8286 does not require an account to grant
+    /// every mode: an account that should never sponsor another transaction's gas can drop
+    /// LibERC8286.APPROVE_PAYMENT, and one that should only ever pay can drop LibERC8286.APPROVE_EXECUTION.
+    uint8 public approvalScopes;
+
+    /// @dev The SENDER-frame shapes this account is willing to authorize, as a bitmask of
+    /// LibERC8286's `FRAME_MODE_*_BIT` values. These are policy declarations, not
+    /// capabilities: the protocol performs batching and atomicity with no account code, so
+    /// every account could honour all four -- this is which ones it will.
+    uint8 public executionModes;
+
+    event ApprovalScopesUpdated(uint8 approvalScopes);
+    event ExecutionModesUpdated(uint8 executionModes);
 
     modifier onlySelf() {
         require(msg.sender == address(this), "unauthorized");
         _;
     }
 
+    /// @dev Installs the account's first frame validator.
+    /// Bootstrapping is otherwise impossible: `installModule` is `onlySelf`, reaching it needs a
+    /// SENDER frame executing as `tx.sender`, that needs execution approval, and `verify()` rejects
+    /// an uninstalled validator. Without this an account is permanently inert.
+    constructor(
+        address validator,
+        bytes memory initData,
+        uint8 approvalScopes_,
+        uint8 executionModes_
+    ) {
+        require(validator != address(0), "validator required");
+        _setApprovalScopes(approvalScopes_);
+        _setExecutionModes(executionModes_);
+        _installValidator(validator, initData);
+    }
+
+    /// @dev Narrowing or widening what this account will approve.
+    ///
+    /// Reachable only through a SENDER frame executing as this account, which itself needs
+    /// an LibERC8286.APPROVE_EXECUTION grant -- so dropping the execution bit is a ONE-WAY door: the
+    /// account can still pay for transactions, but can never change this setting again.
+    function setApprovalScopes(uint8 approvalScopes_) external onlySelf {
+        _setApprovalScopes(approvalScopes_);
+    }
+
+    function _setApprovalScopes(uint8 approvalScopes_) internal {
+        require(approvalScopes_ != LibERC8286.APPROVE_NONE, "no scopes");
+        require(approvalScopes_ & ~LibERC8286.APPROVE_SCOPE_MASK == 0, "invalid scopes");
+        approvalScopes = approvalScopes_;
+        emit ApprovalScopesUpdated(approvalScopes_);
+    }
+
+    /// @dev Narrowing or widening the SENDER-frame shapes this account will authorize.
+    ///
+    /// Reachable only through a SENDER frame executing as this account, so the transaction
+    /// carrying the change must itself present a shape the CURRENT setting still supports.
+    /// Narrowing to a shape you cannot construct strands the setting.
+    function setExecutionModes(uint8 executionModes_) external onlySelf {
+        _setExecutionModes(executionModes_);
+    }
+
+    function _setExecutionModes(uint8 executionModes_) internal {
+        require(executionModes_ != 0, "no modes");
+        require(executionModes_ & ~LibERC8286.FRAME_MODE_BITS_MASK == 0, "invalid modes");
+        executionModes = executionModes_;
+        emit ExecutionModesUpdated(executionModes_);
+    }
+
+    /// @dev An account funds its own execution: LibERC8286.APPROVE_PAYMENT charges the tx cost to this
+    /// contract's balance, and SENDER frames spend from it. Without this it cannot be funded
+    /// by a plain transfer.
+    receive() external payable {}
+
     function verify(bytes calldata data) external override returns (uint8 approvalMode) {
-        uint256 frameIndex;
-        uint256 frameMode;
-        bytes32 sigHash;
-        uint256 allowedRaw;
-        assembly {
-            frameIndex := verbatim_1i_1o(hex"b0", 0x0a) // TXPARAM currently executing frame index
-            frameMode := verbatim_2i_1o(hex"b3", frameIndex, 0x02) // FRAMEPARAM(frameIndex, param=0x02 mode)
-            sigHash := verbatim_1i_1o(hex"b0", 0x08) // TXPARAM canonical signing hash
-            allowedRaw := verbatim_2i_1o(hex"b3", frameIndex, 0x06) // FRAMEPARAM(frameIndex, param=0x06 allowed scope)
-        }
+        uint256 frameIndex = LibERC8286.currentFrameIndex();
 
         // Only a VERIFY frame runs under STATICCALL protection and invalidates the whole
         // transaction on revert. A DEFAULT frame can also reach this code with
         // caller == ENTRY_POINT, so the mode MUST be checked rather than assumed.
-        require(frameMode == MODE_VERIFY, "not a VERIFY frame");
+        require(LibERC8286.frameModeOf(frameIndex) == LibERC8286.MODE_VERIFY, "not a VERIFY frame");
 
-        address validator = address(bytes20(data[0:20]));
-        bytes calldata validatorData = data[20:];
+        (address validator, bytes calldata validatorData) = LibERC8286.decodeValidator(data);
         require(isValidatorInstalled[validator], "validator not installed");
 
-        uint8 allowedScope = uint8(allowedRaw) & APPROVE_SCOPE_MASK;
+        uint8 allowedScope = LibERC8286.allowedScope(frameIndex);
 
-        approvalMode =
-            IFrameValidator(validator).validateFrame(sigHash, frameIndex, allowedScope, validatorData);
+        // Modules are DELEGATECALLed: the module runs in this account's storage context, so
+        // its per-account config lives here and a validation frame reads only the sender's
+        // storage. The module reads frameIndex / allowedScope / sigHash from the transaction
+        // itself; only the frame-data payload, whose layout is this account's convention, is
+        // passed in. See IFrameValidator for what this requires of a module.
+        (bool ok, bytes memory ret) =
+            validator.delegatecall(abi.encodeCall(IFrameValidator.validateFrame, (validatorData)));
+        require(ok, "validator reverted");
+        approvalMode = abi.decode(ret, (uint8));
 
         // Mask to the frame's allowance; the account is the final authority.
         uint8 granted = approvalMode & allowedScope;
 
         // If execution is approved, every presented SENDER-frame mode must be supported;
         // otherwise clear the execution bit, leaving payment (if any) intact.
-        if ((granted & APPROVE_EXECUTION) != 0 && !_senderFramesSupported()) {
-            granted &= APPROVE_PAYMENT;
+        if ((granted & LibERC8286.APPROVE_EXECUTION) != 0 && !_senderFramesSupported()) {
+            granted &= LibERC8286.APPROVE_PAYMENT;
         }
 
-        require(granted != APPROVE_NONE, "validation failed");
+        require(granted != LibERC8286.APPROVE_NONE, "validation failed");
         require(supportsApprovalMode(granted), "unsupported approval mode");
 
-        assembly {
-            verbatim_3i_0o(hex"aa", 0, 0, granted) // APPROVE: offset=0, length=0, scope=granted; exits the frame
-        }
+        LibERC8286.approveScope(granted); // exits the frame
     }
 
-    function supportsApprovalMode(uint8 approvalMode) public pure override returns (bool) {
-        return approvalMode <= APPROVE_SCOPE_MASK;
+    /// @dev True only for a mode whose bits are all enabled in `approvalScopes`.
+    /// LibERC8286.APPROVE_NONE is never supported: it is not a grantable mode, and EIP-8141 rejects an
+    /// APPROVE carrying scope 0.
+    function supportsApprovalMode(uint8 approvalMode) public view override returns (bool) {
+        return approvalMode != LibERC8286.APPROVE_NONE && approvalMode & ~approvalScopes == 0;
     }
 
     function installModule(uint256 moduleTypeId, address module, bytes calldata initData)
@@ -89,11 +138,16 @@ contract ERC8286FrameAccount is IERC8286FrameAccount {
         override
         onlySelf
     {
-        require(moduleTypeId == MODULE_TYPE_FRAME_VALIDATOR, "unsupported module type");
+        require(moduleTypeId == LibERC8286.MODULE_TYPE_FRAME_VALIDATOR, "unsupported module type");
+        _installValidator(module, initData);
+    }
+
+    function _installValidator(address module, bytes memory initData) internal {
         require(!isValidatorInstalled[module], "already installed");
         isValidatorInstalled[module] = true;
-        IERC7579Module(module).onInstall(initData);
-        emit ModuleInstalled(moduleTypeId, module);
+        (bool ok,) = module.delegatecall(abi.encodeCall(IERC7579Module.onInstall, (initData)));
+        require(ok, "install failed");
+        emit ModuleInstalled(LibERC8286.MODULE_TYPE_FRAME_VALIDATOR, module);
     }
 
     function uninstallModule(uint256 moduleTypeId, address module, bytes calldata deInitData)
@@ -101,10 +155,11 @@ contract ERC8286FrameAccount is IERC8286FrameAccount {
         override
         onlySelf
     {
-        require(moduleTypeId == MODULE_TYPE_FRAME_VALIDATOR, "unsupported module type");
+        require(moduleTypeId == LibERC8286.MODULE_TYPE_FRAME_VALIDATOR, "unsupported module type");
         require(isValidatorInstalled[module], "not installed");
         isValidatorInstalled[module] = false;
-        IERC7579Module(module).onUninstall(deInitData);
+        (bool ok,) = module.delegatecall(abi.encodeCall(IERC7579Module.onUninstall, (deInitData)));
+        require(ok, "uninstall failed");
         emit ModuleUninstalled(moduleTypeId, module);
     }
 
@@ -114,7 +169,7 @@ contract ERC8286FrameAccount is IERC8286FrameAccount {
         override
         returns (bool)
     {
-        return moduleTypeId == MODULE_TYPE_FRAME_VALIDATOR && isValidatorInstalled[module];
+        return moduleTypeId == LibERC8286.MODULE_TYPE_FRAME_VALIDATOR && isValidatorInstalled[module];
     }
 
     function accountId() external pure override returns (string memory) {
@@ -126,66 +181,19 @@ contract ERC8286FrameAccount is IERC8286FrameAccount {
     // to authorize, using the frame execution modes (callType 0x02 / 0x03). ERC-7579 execute
     // modes (callType 0x00 / 0x01) report unsupported because there is no execute to process
     // them.
-    function supportsExecutionMode(bytes32 encodedMode) external pure override returns (bool) {
-        return _supportsExecMode(encodedMode[0], encodedMode[1]);
+    function supportsExecutionMode(bytes32 encodedMode) public view override returns (bool) {
+        uint8 bit = LibERC8286.modeBit(encodedMode);
+        return bit != 0 && bit & executionModes != 0;
     }
 
     function supportsModule(uint256 moduleTypeId) external pure override returns (bool) {
-        return moduleTypeId == MODULE_TYPE_FRAME_VALIDATOR;
+        return moduleTypeId == LibERC8286.MODULE_TYPE_FRAME_VALIDATOR;
     }
 
-    function _supportsExecMode(bytes1 callType, bytes1 execType) internal pure returns (bool) {
-        bool okCall = callType == FRAME_CALLTYPE_SINGLE || callType == FRAME_CALLTYPE_BATCH;
-        bool okExec = execType == EXECTYPE_DEFAULT || execType == EXECTYPE_TRY;
-        return okCall && okExec;
-    }
-
-    // Checks every execution mode the transaction's SENDER frames present against
-    // supportsExecutionMode. A transaction presents callType 0x02 if it has exactly one
-    // SENDER frame and 0x03 otherwise; execType is 0x00 for a frame in an atomic batch and
-    // 0x01 otherwise. Returns false if any presented mode is unsupported.
+    // Every mode the transaction's SENDER frames present must be one this account will
+    // authorize. `presentedModeBits` returns them as a bitmask, so the whole check is one
+    // subset test; it returns zero when there are no SENDER frames, nothing to authorize.
     function _senderFramesSupported() internal view returns (bool) {
-        uint256 numFrames;
-        assembly {
-            numFrames := verbatim_1i_1o(hex"b0", 0x09) // TXPARAM len(frames)
-        }
-
-        uint256 senderCount;
-        for (uint256 i = 0; i < numFrames; i++) {
-            if (_frameMode(i) == MODE_SENDER) senderCount++;
-        }
-        if (senderCount == 0) return true; // no SENDER frames, no modes to check
-
-        bytes1 callType = senderCount == 1 ? FRAME_CALLTYPE_SINGLE : FRAME_CALLTYPE_BATCH;
-
-        for (uint256 i = 0; i < numFrames; i++) {
-            if (_frameMode(i) != MODE_SENDER) continue;
-            bytes1 execType = _inAtomicBatch(i) ? EXECTYPE_DEFAULT : EXECTYPE_TRY;
-            if (!_supportsExecMode(callType, execType)) return false;
-        }
-        return true;
-    }
-
-    function _frameMode(uint256 i) internal view returns (uint256 mode) {
-        assembly {
-            mode := verbatim_2i_1o(hex"b3", i, 0x02) // FRAMEPARAM(frameIndex=i, param=0x02 mode)
-        }
-    }
-
-    // A frame is part of an atomic batch if it carries the atomic-batch flag (a frame in
-    // positions i..j-1 of a group), or if the preceding frame carries it (the terminating
-    // frame j of the group).
-    function _inAtomicBatch(uint256 i) internal view returns (bool) {
-        uint256 flag;
-        assembly {
-            flag := verbatim_2i_1o(hex"b3", i, 0x07) // FRAMEPARAM(frameIndex=i, param=0x07 atomic_batch)
-        }
-        if (flag == 1) return true;
-        if (i == 0) return false;
-        uint256 prevFlag;
-        assembly {
-            prevFlag := verbatim_2i_1o(hex"b3", sub(i, 1), 0x07)
-        }
-        return prevFlag == 1;
+        return LibERC8286.presentedModeBits() & ~executionModes == 0;
     }
 }

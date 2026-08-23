@@ -8,8 +8,11 @@ optimizer = true
 optimizer_runs = 200
 via_ir = false
 
-# Reference contracts use EIP-8141 verbatim opcodes (TXPARAM/FRAMEPARAM/APPROVE).
-# They are compile-checked; runtime tests use MockableFrameAccount.
+# The reference contracts use EIP-8141 opcodes (txparam/frameparam/framedatacopy/approve),
+# which stock solc does not know, and forge rejects the required "osaka+eip8141" evm_version.
+# They are built with Hardhat instead (`npm run compile`); forge skips them.
+# Runtime tests use MockableFrameAccount.
+skip = ["src/reference/*"]
 fs_permissions = [{ access = "read", path = "./" }]
 
 [profile.default.fuzz]

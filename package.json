@@ -6,5 +6,19 @@
   "license": "CC0-1.0",
   "dependencies": {
     "@openzeppelin/contracts": "^5.6.1"
-  }
+  },
+  "scripts": {
+    "compile": "hardhat compile",
+    "typecheck": "tsc --noEmit",
+    "deploy": "hardhat run scripts/deploy.ts --network hegota",
+    "send": "hardhat run scripts/send-frame-tx.ts --network hegota",
+    "test:encoder": "hardhat run scripts/frametx-selftest.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "ethers": "^6.17.0",
+    "hardhat": "^3.14.0",
+    "typescript": "^7.0.2"
+  },
+  "type": "module"
 }

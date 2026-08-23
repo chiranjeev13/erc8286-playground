@@ -15,7 +15,13 @@ out/
 .env.*
 !.env.example
 
-lib/
+# Foundry dependencies at the repo root only -- an unanchored `lib/` would also swallow
+# src/lib/ and scripts/lib/.
+/lib/
 
 # npm dependencies (@openzeppelin/contracts)
 node_modules/
+
+# Hardhat
+artifacts/
+cache/

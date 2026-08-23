@@ -8,25 +8,27 @@
 //
 // ACCOUNT_OWNER overrides the ECDSA signer the account is configured with (default: the
 // deployer). Addresses are written back to .env.devnet.
-import { ContractFactory, formatEther } from "ethers";
+import { formatEther } from "viem";
 import { artifact, connect, saveEnv } from "./lib/connect.js";
 
-const { env, wallet } = await connect();
+const { env, client, account: deployer } = await connect();
 
-const balance = await wallet.provider!.getBalance(wallet.address);
-console.log(`deployer ${wallet.address}  balance ${formatEther(balance)} ETH`);
+const balance = await client.getBalance({ address: deployer.address });
+console.log(`deployer ${deployer.address}  balance ${formatEther(balance)} ETH`);
 if (balance === 0n) {
   throw new Error("deployer has no funds -- claim from https://faucet.hegota.ethrex.xyz");
 }
 
 async function deploy(name: string, args: unknown[] = []): Promise<string> {
   const { abi, bytecode } = artifact(name);
-  const contract = await new ContractFactory(abi, bytecode, wallet).deploy(...args);
-  await contract.waitForDeployment();
-  const address = await contract.getAddress();
-  console.log(`${name} = ${address}`);
-  saveEnv(`${name.toUpperCase()}_ADDRESS`, address);
-  return address;
+  const hash = await client.deployContract({ abi, bytecode, args });
+  const { contractAddress } = await client.waitForTransactionReceipt({ hash });
+  if (contractAddress === undefined || contractAddress === null) {
+    throw new Error(`${name}: deployment mined without an address`);
+  }
+  console.log(`${name} = ${contractAddress}`);
+  saveEnv(`${name.toUpperCase()}_ADDRESS`, contractAddress);
+  return contractAddress;
 }
 
 // The validator holds no state of its own: it is delegatecalled and keeps per-account
@@ -37,7 +39,7 @@ const validator = await deploy("ECDSAFrameValidator");
 // onlySelf, and reaching it needs an execution approval that only an installed validator
 // can grant, so a validator-less account would be permanently inert. initData is the
 // owner's address, which onInstall writes into this account's storage.
-const owner = process.env.ACCOUNT_OWNER ?? env.ACCOUNT_OWNER ?? wallet.address;
+const owner = process.env.ACCOUNT_OWNER ?? env.ACCOUNT_OWNER ?? deployer.address;
 
 // Which APPROVE scopes the account will grant: 0x1 payment, 0x2 execution, 0x3 both.
 // Dropping 0x2 is a one-way door -- setApprovalScopes is reachable only through a SENDER

@@ -1,4 +1,4 @@
-import { concat, encodeRlp, getBytes, keccak256, toBeHex, zeroPadValue } from "ethers";
+import { concat, keccak256, numberToHex, size, toRlp } from "viem";
 
 /**
  * EIP-8141/8250/8272/7906 frame-transaction (type 0x06) encoder.
@@ -20,13 +20,24 @@ export const SigScheme = { ARBITRARY: 0, SECP256K1: 1, P256: 2 } as const;
 /** Anything accepted where the wire format wants an integer. */
 export type Numeric = number | bigint | string;
 /** A 0x-prefixed hex string. */
-export type Hex = string;
+export type Hex = `0x${string}`;
 /** RLP is a tree of byte strings. */
 type RlpItem = Hex | RlpItem[];
 
-/** RLP integer: the minimal big-endian encoding, with zero as the empty string. */
-const rlpInt = (x: Numeric): Hex => (BigInt(x) === 0n ? "0x" : toBeHex(BigInt(x)));
-const addr20 = (a: Numeric): Hex => zeroPadValue(toBeHex(BigInt(a)), 20);
+/**
+ * RLP integer: the minimal big-endian encoding, with zero as the empty string.
+ *
+ * Built from the hex digits directly rather than through viem's `numberToHex`, which
+ * without a `size` emits the shortest digit string -- a nibble short of a whole byte for
+ * odd-length values (`1n` -> `0x1`).
+ */
+const rlpInt = (x: Numeric): Hex => {
+  const value = BigInt(x);
+  if (value === 0n) return "0x";
+  const digits = value.toString(16);
+  return `0x${digits.length % 2 === 0 ? digits : `0${digits}`}`;
+};
+const addr20 = (a: Numeric): Hex => numberToHex(BigInt(a), { size: 20 });
 
 export interface FrameInit {
   mode: number;
@@ -152,7 +163,7 @@ export class FrameTx {
   }
 
   encode(): Hex {
-    return encodeRlp(this.#envelope(false));
+    return toRlp(this.#envelope(false));
   }
 
   raw(): Hex {
@@ -160,7 +171,7 @@ export class FrameTx {
   }
 
   sigHash(): Hex {
-    return keccak256(concat(["0x06", encodeRlp(this.#envelope(true))]));
+    return keccak256(concat(["0x06", toRlp(this.#envelope(true))]));
   }
 }
 
@@ -169,7 +180,7 @@ export class FrameTx {
  * Because valid `nonce_keys` are strictly increasing, this has one canonical encoding.
  */
 export function nonceKeysHash(nonceKeys: Numeric[]): Hex {
-  const w = (x: Numeric): Hex => zeroPadValue(toBeHex(BigInt(x)), 32);
+  const w = (x: Numeric): Hex => numberToHex(BigInt(x), { size: 32 });
   return keccak256(concat([w(nonceKeys.length), ...nonceKeys.map(w)]));
 }
 
@@ -202,11 +213,11 @@ export function authDigest({
   nonceKeys,
   senderFrames,
 }: AuthDigestInput): Hex {
-  const w = (x: Numeric): Hex => zeroPadValue(toBeHex(BigInt(x)), 32);
+  const w = (x: Numeric): Hex => numberToHex(BigInt(x), { size: 32 });
   const parts: Hex[] = [w(chainId), w(nonce), w(sender), nonceKeysHash(nonceKeys)];
   for (const f of senderFrames) {
     if (f.target === null) throw new Error("a SENDER frame in the digest needs a resolved target");
-    parts.push(w(f.target), w(f.value), w(getBytes(f.data).length), f.data);
+    parts.push(w(f.target), w(f.value), w(size(f.data)), f.data);
   }
   return keccak256(concat(parts));
 }

@@ -25,55 +25,27 @@
 // The envelope's `signatures` list is empty: authorization is the account's APPROVE, not an
 // outer signature.
 import {
-  AbiCoder,
-  SigningKey,
+  bytesToHex,
   concat,
+  encodeFunctionData,
   formatEther,
-  getBytes,
-  hexlify,
-  id,
+  getAddress,
+  hexToBytes,
   keccak256,
-  toBeHex,
-  zeroPadValue,
-} from "ethers";
-import { Frame, FrameMode, FrameTx, authDigest, type Hex } from "./lib/frametx.js";
-import { connect, need } from "./lib/connect.js";
+  numberToHex,
+  pad,
+  size,
+  type Hex,
+} from "viem";
+import { Frame, FrameMode, FrameTx, authDigest } from "./lib/frametx.js";
+import { connect, need, type FrameSimulation, type TypedReceipt } from "./lib/connect.js";
 
 const APPROVE_SCOPE_EXECUTION_AND_PAYMENT = 0x03;
-const VERIFY_SELECTOR = id("verify(bytes)").slice(0, 10);
 
-/** One frame's outcome, as ethrex reports it. */
-interface FrameResult {
-  gasUsed: string;
-  succeeded: boolean;
-}
-
-/** Response of ethrex_simulateFrameTransaction. */
-interface FrameSimulation {
-  valid: boolean;
-  prefixShape: string | null;
-  payer: string | null;
-  maxCost: string | null;
-  violation: string | null;
-  gasUsed: string | null;
-  frames: FrameResult[] | null;
-  executionStatus: string | null;
-  executionError: string | null;
-}
-
-interface FrameReceipt {
-  status: string;
-  gasUsed: string;
-  logs: unknown[];
-}
-
-interface TypedReceipt {
-  blockNumber: string;
-  type: string;
-  status: string;
-  payer?: string;
-  frameReceipts?: FrameReceipt[];
-}
+/** The account's `verify(bytes)`, reached as an ordinary ABI-encoded call. */
+const VERIFY_ABI = [
+  { type: "function", name: "verify", inputs: [{ type: "bytes" }], outputs: [] },
+] as const;
 
 /**
  * The devnet's sibling RPCs. Frame transactions propagate by full broadcast and not via
@@ -104,17 +76,16 @@ async function sendRaw(url: string, rawTx: string): Promise<void> {
   if (body.error !== undefined) throw new Error(body.error.message);
 }
 
-const to = process.env.TO ?? "0x000000000000000000000000000000000000dEaD";
+const to = getAddress(process.env.TO ?? "0x000000000000000000000000000000000000dEaD");
 const amount = BigInt(process.env.AMOUNT ?? 1_000_000_000_000_000n);
 const submit = process.env.SUBMIT === "1";
 const badSig = process.env.BAD_SIG === "1";
 const force = process.env.FORCE === "1";
 
-const { env, provider, wallet, chainId } = await connect();
+const { env, client, account: owner, chainId } = await connect();
 const hint = "run `npm run deploy` first";
-const account = need(env, "ERC8286FRAMEACCOUNT_ADDRESS", hint);
-const validator = need(env, "ECDSAFRAMEVALIDATOR_ADDRESS", hint);
-const key = need(env, "DEVNET_PRIVATE_KEY", "generate one with `cast wallet new`");
+const account = getAddress(need(env, "ERC8286FRAMEACCOUNT_ADDRESS", hint));
+const validator = getAddress(need(env, "ECDSAFRAMEVALIDATOR_ADDRESS", hint));
 
 // EIP-8250: the account selects its validator from nonce_keys[0], and the key set is part
 // of the signed envelope, so a relayer cannot substitute another validator.
@@ -123,18 +94,17 @@ const nonceKeys = [BigInt(validator)];
 // A keyed nonce has its own sequence in NONCE_MANAGER at keccak256(pad32(sender) || pad32(key)).
 const NONCE_MANAGER = "0x0000000000000000000000000000000000008250";
 const nonceSlot = keccak256(
-  concat([zeroPadValue(account, 32), zeroPadValue(toBeHex(nonceKeys[0]!), 32)]),
+  concat([pad(account, { size: 32 }), numberToHex(nonceKeys[0]!, { size: 32 })]),
 );
-const nonce = Number(
-  BigInt(await provider.send("eth_getStorageAt", [NONCE_MANAGER, nonceSlot, "latest"])),
-);
-const balance = await provider.getBalance(account);
-const block = await provider.getBlock("latest");
+const stored = await client.getStorageAt({ address: NONCE_MANAGER, slot: nonceSlot });
+const nonce = Number(BigInt(stored ?? "0x0"));
+const balance = await client.getBalance({ address: account });
+const block = await client.getBlock();
 const maxPriorityFee = 1_000_000_000n;
-const maxFee = (block?.baseFeePerGas ?? 0n) * 2n + maxPriorityFee;
+const maxFee = (block.baseFeePerGas ?? 0n) * 2n + maxPriorityFee;
 
 console.log(`account   ${account}  balance ${formatEther(balance)} ETH  nonce ${nonce}`);
-console.log(`validator ${validator}  owner ${wallet.address}  nonce_seq ${nonce}`);
+console.log(`validator ${validator}  owner ${owner.address}  nonce_seq ${nonce}`);
 
 // The SENDER frames are what the validator's digest commits to, so they are fixed before
 // the VERIFY frame's data (which carries the signature over that digest) can exist.
@@ -152,24 +122,23 @@ const digest = authDigest({
   nonceKeys,
   senderFrames: [senderFrame],
 });
-const sig = new SigningKey(key).sign(digest);
 // ECDSAFrameValidator reads r(32) || s(32) || v(1) and hands them to ecrecover, which wants
-// v in {27,28} -- which is what ethers' `v` already is.
-let frameSig: Hex = concat([sig.r, sig.s, hexlify(new Uint8Array([sig.v]))]);
+// v in {27,28} -- which is exactly what a viem account's `sign` serializes.
+let frameSig: Hex = await owner.sign({ hash: digest });
 if (badSig) {
-  const bytes = Uint8Array.from(getBytes(frameSig));
-  bytes.set([(bytes.at(0) ?? 0) ^ 0xff], 0); // corrupt r so ecrecover yields a different signer
-  frameSig = hexlify(bytes);
+  const bytes = hexToBytes(frameSig);
+  bytes[0] = (bytes[0] ?? 0) ^ 0xff; // corrupt r so ecrecover yields a different signer
+  frameSig = bytesToHex(bytes);
   console.log("BAD_SIG: signature corrupted on purpose");
 }
 
 // A VERIFY frame's `data` is the calldata of the call to its target, so the account's
 // verify(bytes) is reached through an ordinary ABI-encoded call.
-const payload = frameSig;
-const verifyData = concat([
-  VERIFY_SELECTOR,
-  AbiCoder.defaultAbiCoder().encode(["bytes"], [payload]),
-]);
+const verifyData = encodeFunctionData({
+  abi: VERIFY_ABI,
+  functionName: "verify",
+  args: [frameSig],
+});
 
 const tx = new FrameTx({
   chainId,
@@ -193,15 +162,15 @@ const tx = new FrameTx({
 
 const raw = tx.raw();
 console.log(`auth_digest ${digest}`);
-console.log(`raw type-0x06 tx: ${getBytes(raw).length} bytes`);
+console.log(`raw type-0x06 tx: ${size(raw)} bytes`);
 
 // eth_call cannot represent a frame transaction, so ethrex exposes a dedicated dry-run that
 // takes the exact bytes eth_sendRawTransaction would. `valid` covers only the EIP-8141
 // validation prefix -- necessary for admission, not sufficient.
-const sim: FrameSimulation = await provider.send("ethrex_simulateFrameTransaction", [
-  raw,
-  "latest",
-]);
+const sim: FrameSimulation = await client.request({
+  method: "ethrex_simulateFrameTransaction",
+  params: [raw, "latest"],
+});
 console.log("\n--- ethrex_simulateFrameTransaction ---");
 console.log(JSON.stringify(sim, null, 2));
 
@@ -218,9 +187,9 @@ if (!submit) {
   process.exit(0);
 }
 
-let hash: string;
+let hash: Hex;
 try {
-  hash = await provider.send("eth_sendRawTransaction", [raw]);
+  hash = await client.sendRawTransaction({ serializedTransaction: raw });
 } catch (e) {
   const message = e instanceof Error ? e.message : String(e);
   console.log(`\nSUBMIT REJECTED: ${message}`);
@@ -239,7 +208,12 @@ if (peers.length > 0) {
 }
 
 for (let i = 0; i < 30; i++) {
-  const receipt: TypedReceipt | null = await provider.send("eth_getTransactionReceipt", [hash]);
+  // Fetched raw: viem's receipt formatter knows nothing of `payer` or `frameReceipts`, and
+  // a type-0x06 receipt is not one of the types it can name.
+  const receipt: TypedReceipt | null = await client.request({
+    method: "eth_getTransactionReceipt",
+    params: [hash],
+  });
   if (receipt !== null) {
     console.log(
       `MINED block=${Number(receipt.blockNumber)} type=${receipt.type} ` +

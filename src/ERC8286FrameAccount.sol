@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 pragma solidity ^0.8.21;
 
-import {IFrameValidator} from "../interfaces/IFrameValidator.sol";
-import {IERC8286FrameAccount} from "../interfaces/IERC8286FrameAccount.sol";
+import {IFrameValidator} from "./interfaces/IFrameValidator.sol";
+import {IERC8286FrameAccount} from "./interfaces/IERC8286FrameAccount.sol";
 import {IERC7579Module} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
-import {LibERC8286} from "../lib/LibERC8286.sol";
+import {LibERC8286} from "./lib/LibERC8286.sol";
 
 // IERC7579Module, and the IERC7579AccountConfig / IERC7579ModuleConfig surfaces inherited
 // via IERC8286FrameAccount, come from OpenZeppelin's ERC-7579 interfaces
@@ -19,7 +19,7 @@ contract ERC8286FrameAccount is IERC8286FrameAccount {
     /// APPROVE_EXECUTION.
     uint8 public approvalScopes;
 
-    /// @dev The SENDER-frame shapes this account will authorize, keyed by mode word.
+    /// @dev The SENDERframe shapes this account will authorize, keyed by mode word.
     mapping(bytes32 => bool) public isExecutionModeSupported;
 
     event ApprovalScopesUpdated(uint8 approvalScopes);

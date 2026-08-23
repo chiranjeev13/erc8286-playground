@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 pragma solidity ^0.8.21;
 
-import {IFrameValidator} from "../interfaces/IFrameValidator.sol";
-import {LibERC8286} from "../lib/LibERC8286.sol";
+import {IFrameValidator} from "./interfaces/IFrameValidator.sol";
+import {LibERC8286} from "./lib/LibERC8286.sol";
 
 contract ECDSAFrameValidator is IFrameValidator {
     // Serves only the EIP-8141 frame flow, not ERC-7579's validateUserOp.

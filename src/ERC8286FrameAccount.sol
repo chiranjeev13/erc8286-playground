@@ -39,6 +39,29 @@ contract ERC8286FrameAccount is IERC8286FrameAccount {
         uint8 approvalScopes_,
         bytes32[] memory executionModes_
     ) {
+        _initialize(validator, initData, approvalScopes_, executionModes_);
+    }
+
+    /// @dev The proxy counterpart to the constructor. A proxy runs its implementation's
+    /// constructor never -- that ran once, against the implementation's own storage -- so a
+    /// cloned account is configured through here, delegatecalled from the proxy's
+    /// constructor and therefore writing to the proxy's storage.
+    function initialize(
+        address validator,
+        bytes calldata initData,
+        uint8 approvalScopes_,
+        bytes32[] calldata executionModes_
+    ) external {
+        require(approvalScopes == LibERC8286.APPROVE_NONE, "already initialized");
+        _initialize(validator, initData, approvalScopes_, executionModes_);
+    }
+
+    function _initialize(
+        address validator,
+        bytes memory initData,
+        uint8 approvalScopes_,
+        bytes32[] memory executionModes_
+    ) internal {
         require(validator != address(0), "validator required");
         require(executionModes_.length != 0, "no modes");
         _setApprovalScopes(approvalScopes_);

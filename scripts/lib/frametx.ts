@@ -196,8 +196,11 @@ export interface AuthDigestInput {
  * Mirror of ECDSAFrameValidator._authDigest().
  *
  * abi.encodePacked(uint256 chainid, uint256 nonce, uint256 sender, bytes32 nonceKeysHash),
- * then per SENDER frame uint256 target, uint256 value, uint256 len(data), and the raw data.
- * Every scalar is a uint256, so 32 bytes big-endian with no packing.
+ * then per SENDER frame uint256 target, uint256 value, uint256 flags, uint256 len(data), and
+ * the raw data. Every scalar is a uint256, so 32 bytes big-endian with no packing.
+ *
+ * flags is included because bit 2 is EIP-8141's ATOMIC_BATCH_FLAG: it decides whether the
+ * frames revert together, so it has to be signed over like any other frame field.
  *
  * nonceKeysHash commits the EIP-8250 key set. When the account selects its validator from
  * nonce_keys[0], that selection is signed over here: swap the validator and the digest moves.
@@ -217,7 +220,7 @@ export function authDigest({
   const parts: Hex[] = [w(chainId), w(nonce), w(sender), nonceKeysHash(nonceKeys)];
   for (const f of senderFrames) {
     if (f.target === null) throw new Error("a SENDER frame in the digest needs a resolved target");
-    parts.push(w(f.target), w(f.value), w(size(f.data)), f.data);
+    parts.push(w(f.target), w(f.value), w(f.flags), w(size(f.data)), f.data);
   }
   return keccak256(concat(parts));
 }

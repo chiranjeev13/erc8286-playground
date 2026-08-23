@@ -86,6 +86,7 @@ contract ECDSAFrameValidator is IFrameValidator {
                 preimage,
                 uint256(uint160(LibERC8286.frameTarget(i))),
                 LibERC8286.frameValue(i),
+                LibERC8286.frameFlags(i),
                 dataLen,
                 LibERC8286.frameData(i)
             );

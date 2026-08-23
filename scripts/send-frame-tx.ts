@@ -1,15 +1,9 @@
 // Builds, simulates, and optionally submits an ERC-8286 frame transaction (type 0x06).
 //
-//   npm run send                # simulate
-//   SUBMIT=1 npm run send       # ...and send it
+//   npm run send
 //
-// Configured by environment variables, because `hardhat run` does not forward positional
-// arguments to a script:
-//   TO        recipient                       (default 0x…dEaD)
-//   AMOUNT    wei to transfer                 (default 1e15)
-//   SUBMIT=1  send it, instead of simulating only
-//   BAD_SIG=1 corrupt the signature on purpose (negative control)
-//   FORCE=1   submit even if the prefix simulation says invalid
+// What it sends is set by the constants below -- `hardhat run` forwards no positional
+// arguments, so edit them in place.
 //
 // Unlike the devnet's self-verified transfer (where the sender is an EOA and the protocol's
 // default code checks the envelope signature), the sender here is an ERC8286FrameAccount:
@@ -76,11 +70,16 @@ async function sendRaw(url: string, rawTx: string): Promise<void> {
   if (body.error !== undefined) throw new Error(body.error.message);
 }
 
-const to = getAddress(process.env.TO ?? "0x000000000000000000000000000000000000dEaD");
-const amount = BigInt(process.env.AMOUNT ?? 1_000_000_000_000_000n);
-const submit = process.env.SUBMIT === "1";
-const badSig = process.env.BAD_SIG === "1";
-const force = process.env.FORCE === "1";
+/** Recipient of the SENDER frame's transfer. */
+const to = getAddress("0x000000000000000000000000000000000000dEaD");
+/** Wei to transfer. */
+const amount = 1_000_000_000_000_000n;
+/** Submit it, rather than simulating only. */
+const submit: boolean = false;
+/** Corrupt the signature on purpose, as a negative control. */
+const badSig: boolean = false;
+/** Submit even if the prefix simulation says invalid. */
+const force: boolean = false;
 
 const { env, client, account: owner, chainId } = await connect();
 const hint = "run `npm run deploy` first";
@@ -183,7 +182,7 @@ if (!sim.valid) {
 }
 
 if (!submit) {
-  console.log("\nsimulation only; set SUBMIT=1 to send");
+  console.log("\nsimulation only; set `submit` to send");
   process.exit(0);
 }
 

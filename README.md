@@ -87,6 +87,12 @@ selection is bound to the transaction: a relayer cannot substitute a different i
 validator. `ECDSAFrameValidator` reinforces this by committing `nonce_keys_hash`
 (`TXPARAM(0x0E)`) in its digest, so swapping the validator invalidates the signature.
 
+The digest also commits each SENDER frame's `flags` (`FRAMEPARAM(i, 0x03)`), whose bit 2 is
+EIP-8141's `ATOMIC_BATCH_FLAG`. The envelope carries no outer signature, so this digest is
+the only thing binding the frames to the owner: leaving the flag out would let anyone holding
+the raw transaction regroup the batch, turning an all-or-nothing group into frames that
+revert independently (or the reverse). `gas_limit` and the fee fields remain uncommitted.
+
 There is no fallback: a VERIFY frame whose `nonce_keys[0]` does not encode an address is
 rejected, and the entire VERIFY payload belongs to the validator.
 
@@ -101,8 +107,9 @@ A keyed nonce has its own sequence in the `NONCE_MANAGER` predeploy (`0x…8250`
 
 ERC-8286 does not require an account to grant every approval mode. `approvalScopes` is a
 bitmask of what this account is willing to approve (`0x1` payment, `0x2` execution, `0x3`
-both), set at construction (`APPROVAL_SCOPES` when deploying) and changeable afterwards
-through `setApprovalScopes`. `supportsApprovalMode` reports against it, and `verify()`
+both), set at construction (`APPROVAL_SCOPES` in
+[`scripts/lib/policy.ts`](scripts/lib/policy.ts)) and changeable afterwards through
+`setApprovalScopes`. `supportsApprovalMode` reports against it, and `verify()`
 refuses to `APPROVE` a mode outside it.
 
 Dropping `0x2` is a one-way door: `setApprovalScopes` is `onlySelf`, reachable only through a
@@ -113,8 +120,9 @@ Such an account can still pay for other transactions but can never reconfigure i
 
 `isExecutionModeSupported` is a set of SENDER-frame shapes, keyed by the ERC-7579-layout mode
 word itself — there is no second representation of a mode. Deploy with
-`EXECUTION_MODES=all` or a comma-separated list of `single`, `single-atomic`, `batch`,
-`batch-atomic`; change it later with `setExecutionMode(bytes32 mode, bool supported)`.
+the shapes listed in `EXECUTION_MODE_NAMES`
+([`scripts/lib/policy.ts`](scripts/lib/policy.ts)); change it later with
+`setExecutionMode(bytes32 mode, bool supported)`.
 `supportsExecutionMode` is the mapping lookup, so an unregistered word — an ERC-7579 execute
 mode, or a frame mode with a stray payload byte — is simply absent and reports `false`.
 These are policy declarations rather than capabilities: the protocol performs batching and
@@ -137,6 +145,85 @@ change must itself present a shape the current setting still supports.
 > presented shape reverts either way; the degraded payment-only grant is meaningful only for
 > a separate paymaster frame in the `only_verify + pay` shape.
 
+### Account deployment
+
+There is no factory contract. The [EIP-7997](https://eips.ethereum.org/EIPS/eip-7997)
+deterministic-deployment predeploy at `0x4e59…956C` is the factory: its calldata is
+`salt(32) || initcode`, it `CREATE2`s that, and it mixes **nothing about the caller** into the
+address. So an account's address follows from its creation code and salt alone, and a factory
+contract would only be re-deriving what anyone can derive.
+
+[`scripts/lib/accounts.ts`](scripts/lib/accounts.ts) does the deriving:
+
+```
+initCode      = initialize(validator, owner, approvalScopes, executionModes) calldata
+salt          = keccak256(keccak256(initCode) || index)          # a convention, not a rule
+creationCode  = ERC8286AccountProxy creation code || abi.encode(implementation, initCode)
+account       = CREATE2(0x4e59…956C, salt, keccak256(creationCode))
+```
+
+An account is [`ERC8286AccountProxy`](src/ERC8286AccountProxy.sol) — OpenZeppelin's
+`ERC1967Proxy` under a local name, so the creation code is a compiled artifact of this repo and
+whatever derives the address agrees byte for byte on the code being deployed. The proxy's
+constructor delegatecalls the init code, so the account's configuration is written to the
+proxy's storage as it is deployed and is committed by its address: nobody can occupy your
+address with a different validator or owner. `index` gives one configuration many accounts.
+
+```bash
+npm run create:account
+```
+
+`index` picks the account and `fund` is the ETH it starts with — both constants at the top of
+[`scripts/create-account.ts`](scripts/create-account.ts), since `hardhat run` forwards no
+positional arguments. The implementation is reused from `.env.devnet` whenever one is recorded
+there and still has code; one implementation serves every account. The script writes the
+account to `ERC8286FRAMEACCOUNT_ADDRESS`, so `npm run send` and `npm run send:batch` then
+target it.
+
+Deployment and funding are two transactions. The predeploy `CREATE2`s with the call's value,
+and `DELEGATECALL` preserves `callvalue`, so value would reach `initialize` and on to the
+module's `onInstall` — non-payable in `IERC7579Module`, and Solidity forbids widening that in
+an override, so the install reverts with only `install failed` to show for it. Accounts are
+deployed with no value and funded by a plain transfer, which `receive()` accepts.
+
+An account reached through a proxy validates frame transactions normally, which is not
+obvious: the `VERIFY` frame delegatecalls twice (proxy → implementation → validator) and reads
+the ERC-1967 implementation slot on the way. Both storage reads are on the sender, which is
+what the ERC-7562-style validation rules require, and ethrex admits the transaction. It costs
+about 6k more gas than a directly deployed account.
+
+### Deploying the sender inside its own transaction
+
+Because the address is caller-independent, the account can be deployed by an EIP-8141 `DEFAULT`
+frame that calls the predeploy — EIP-8141 example 1b, the flow that lets an account pay for the
+transaction that creates it. [`scripts/send-deploy-and-send.ts`](scripts/send-deploy-and-send.ts)
+(`npm run send:deploy`) builds it:
+
+```
+frame[0]  DEFAULT, target = 0x4e59…956C, data = salt || creation code   -> CREATE2s the account
+frame[1]  VERIFY,  target = empty (resolves to tx.sender), flags 0x03   -> it validates
+frame[2]  SENDER,  target = recipient, value = amount
+```
+
+ethrex recognises the shape — it reports `prefixShape: "DeploySelfVerify"` — but **this account
+is too expensive to deploy there.** Every frame before the first `SENDER` frame shares one gas
+budget, `MAX_VERIFY_GAS` = 500,000, and on this devnet:
+
+| | gas |
+|---|---|
+| empty contract via the predeploy | 213,105 |
+| ERC-1167 minimal clone (45 bytes) | 283,383 |
+| `ERC8286AccountProxy`, no config written | 690,493 |
+| … + `initialize`, 1 mode / 4 modes | 1,132,629 / 1,476,689 |
+
+So no choice of frame gas limits fits: the proxy alone is over budget before a single config
+slot is written, and `initialize` adds ~442k more, most of it seven separate storage writes
+(`approvalScopes`, one per execution mode, `isValidatorInstalled`, and the module's owner).
+Fitting under 500k needs both a leaner proxy — an ERC-1167 clone keeps the implementation in
+code and skips the implementation-slot write — and a packed configuration, since a validator
+address, the scope bits and a four-bit mode mask fit in a single word. Both are changes to the
+account, not to the deployment path.
+
 ### Devnet: sending a frame transaction
 
 `.env.devnet` holds `DEVNET_PRIVATE_KEY`, `DEVNET_RPC`, and the deployed addresses (it is
@@ -145,7 +232,6 @@ gitignored). Fund the key from https://faucet.hegota.ethrex.xyz, then:
 ```bash
 npm run deploy            # validator, then the account with it installed by its constructor
 npm run send              # simulate a frame transaction
-SUBMIT=1 npm run send     # ...and submit it
 ```
 
 [`scripts/send-frame-tx.ts`](scripts/send-frame-tx.ts) builds a type-`0x06` transaction whose
@@ -160,9 +246,11 @@ signatures = []          # authorization is the account's APPROVE, not an outer 
 ```
 
 It dry-runs through `ethrex_simulateFrameTransaction` first, since `eth_call` cannot
-represent a frame transaction. Environment variables configure it (`hardhat run` forwards no
-positional arguments): `TO`, `AMOUNT`, `SUBMIT=1`, `BAD_SIG=1` to corrupt the signature as a
-negative control, `FORCE=1` to submit despite an invalid prefix.
+represent a frame transaction. Constants at the top of the script decide what it does —
+`hardhat run` forwards no positional arguments, so they are edited in place: `to` and `amount`,
+`submit` to send rather than simulate, `badSig` to corrupt the signature as a negative
+control, and `force` to submit despite an invalid prefix. The batch and self-deploying scripts
+are configured the same way.
 
 After submitting it re-broadcasts the identical bytes to the devnet's sibling RPCs. Frame-tx
 gossip between the nodes is best-effort, so a transaction can otherwise sit in one node's

@@ -147,7 +147,7 @@ export interface Artifact {
 
 /** Reads a compiled artifact from Hardhat's output. */
 export function artifact(contract: string): Artifact {
-  const path = `artifacts/src/reference/${contract}.sol/${contract}.json`;
+  const path = `artifacts/src/${contract}.sol/${contract}.json`;
   return JSON.parse(readFileSync(path, "utf8")) as Artifact;
 }
 

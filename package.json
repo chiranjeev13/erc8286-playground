@@ -12,6 +12,8 @@
     "typecheck": "tsc --noEmit",
     "deploy": "hardhat run scripts/deploy.ts --network hegota",
     "send": "hardhat run scripts/send-frame-tx.ts --network hegota",
+    "send:batch": "hardhat run scripts/send-atomic-batch.ts --network hegota",
+    "send:deploy": "hardhat run scripts/send-deploy-and-send.ts --network hegota",
     "test:encoder": "hardhat run scripts/frametx-selftest.ts"
   },
   "devDependencies": {

@@ -18,7 +18,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
-import type { Plugin } from "vite";
 import {
   bytesToHex,
   createPublicClient,
@@ -42,8 +41,8 @@ import {
   authTypedData,
   nonceManagerFor,
   nonceSlot,
-} from "../../scripts/lib/frametx";
-import { FRAME_MODES, type FrameModeName } from "../../scripts/lib/policy";
+} from "../../scripts/lib/frametx.js";
+import { FRAME_MODES, type FrameModeName } from "../../scripts/lib/policy.js";
 
 const CHAIN_ID = 8141;
 const ATOMIC_FLAG = 0x04;
@@ -637,7 +636,7 @@ function holdUntilMined(env: Env, account: Hex, signer: Signer, nonce: number): 
   })();
 }
 
-async function handle(req: IncomingMessage, res: ServerResponse, next: () => void): Promise<void> {
+export async function handle(req: IncomingMessage, res: ServerResponse, next: () => void): Promise<void> {
   const url = new URL(req.url ?? "/", "http://local");
   if (!url.pathname.startsWith("/api/pg/")) return next();
   const env = loadEnv();
@@ -705,21 +704,4 @@ async function handle(req: IncomingMessage, res: ServerResponse, next: () => voi
 /** The same handler as a plain Node request handler, for a serverless function. */
 export function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   return handle(req, res, () => reply(res, 404, { error: "not found" }));
-}
-
-export function frameApi(): Plugin {
-  type Mw = { use: (fn: (req: IncomingMessage, res: ServerResponse, next: () => void) => void) => void };
-  const mount = (mw: Mw) => {
-    mw.use((req, res, next) => void handle(req, res, next));
-  };
-  return {
-    name: "erc8286-playground-api",
-    // Block bodies on purpose: a function returned from these hooks is run as a post-hook.
-    configureServer(server) {
-      mount(server.middlewares);
-    },
-    configurePreviewServer(server) {
-      mount(server.middlewares);
-    },
-  };
 }

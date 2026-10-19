@@ -32,3 +32,8 @@ cache/
 # Vite build output and Vercel's local state
 dist/
 .vercel/
+.vercel
+.env*
+
+# Bundled on Vercel from site/server/vercel-handler.ts
+/api/pg/*.js

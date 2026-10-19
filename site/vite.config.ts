@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import { frameApi } from "./server/frame-api";
+import { frameApi } from "./server/vite-plugin";
 
 // The playground's transactions are built, signed and sent by a dev/preview-server route, so the
 // throwaway testnet key never reaches the browser.

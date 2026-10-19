@@ -2,10 +2,10 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "installCommand": "npm ci --include=dev && cd site && npm ci --include=dev",
-  "buildCommand": "cd site && npm run build",
+  "buildCommand": "cd site && npm run build && cd .. && node scripts/bundle-vercel-api.mjs",
   "outputDirectory": "site/dist",
   "functions": {
-    "api/pg/[[...route]].ts": {
+    "api/pg/[[...route]].js": {
       "maxDuration": 60
     }
   }

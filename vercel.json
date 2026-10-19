@@ -1,8 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "installCommand": "npm ci && npm ci --prefix site",
-  "buildCommand": "npm run build --prefix site",
+  "installCommand": "npm ci --include=dev && cd site && npm ci --include=dev",
+  "buildCommand": "cd site && npm run build",
   "outputDirectory": "site/dist",
   "functions": {
     "api/pg/[[...route]].ts": {

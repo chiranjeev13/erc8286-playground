@@ -36,4 +36,4 @@ dist/
 .env*
 
 # Bundled on Vercel from site/server/vercel-handler.ts
-/api/pg/*.js
+/api/pg/_handler.cjs

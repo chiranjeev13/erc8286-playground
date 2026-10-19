@@ -253,7 +253,7 @@ paid by a paymaster (464691), and a prefunded post-quantum account paying for it
 
 The playground in `site/` is a Vite app with a small API. In development the API is a Vite
 middleware (`site/server/frame-api.ts`); on Vercel the same handler runs as the function
-`api/pg/[[...route]].js` (bundled from `site/server/vercel-handler.ts`), with `vercel.json` building the site from the repo root. The server
+`api/pg/[[...route]].js` (a stub loading `site/server/vercel-handler.ts`, bundled at build time), with `vercel.json` building the site from the repo root. The server
 holds no key and keeps no state: it reads the chain, predicts addresses, builds and simulates
 frame transactions, and relays the ones the browser signed. The browser remembers the accounts
 it created (address plus clone spec) and the post-quantum keys it generated, in localStorage.

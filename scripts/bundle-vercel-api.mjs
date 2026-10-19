@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const { build } = createRequire(join(root, "site/package.json"))("esbuild");
-const outfile = join(root, "api/pg/[[...route]].js");
+const outfile = join(root, "api/pg/_handler.cjs");
 mkdirSync(dirname(outfile), { recursive: true });
 
 await build({

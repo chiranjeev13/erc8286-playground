@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <script>
+      // Apply a saved dark choice before first paint, so there is no flash. Light otherwise.
+      try {
+        if (localStorage.getItem("erc8286-theme") === "dark") document.documentElement.classList.add("dark");
+      } catch (e) {}
+    </script>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ERC-8286 Playground</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

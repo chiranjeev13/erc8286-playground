@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import type { HardhatUserConfig } from "hardhat/config";
 import type { HardhatPlugin } from "hardhat/types/plugins";
 import type { Compiler, CompilerInput, CompilerOutput } from "hardhat/types/solidity";
-import { config as loadEnv } from "./scripts/lib/env.js";
+import { envFileFor, config as loadEnv } from "./scripts/lib/env.js";
 
 // The reference contracts emit EIP-8141 instructions, which no released solc knows.
 // They are compiled with a fork:
@@ -75,23 +75,56 @@ const eip8141SolcPlugin: HardhatPlugin = {
   },
 };
 
-const env = existsSync(".env.devnet") ? loadEnv(".env.devnet") : {};
-const privateKey = env.DEVNET_PRIVATE_KEY;
+/** Each devnet keeps its key, RPC, and deployed addresses in its own file. */
+function devnetEnv(network: string) {
+  const path = envFileFor(network);
+  return existsSync(path) ? loadEnv(path) : {};
+}
+const keys = (env: Record<string, string>) =>
+  env.DEVNET_PRIVATE_KEY === undefined ? [] : [env.DEVNET_PRIVATE_KEY];
+const hegotaEnv = devnetEnv("hegota");
+const bogotaEnv = devnetEnv("bogota");
+const testnetEnv = devnetEnv("hegota-testnet");
 
 const config: HardhatUserConfig = {
   plugins: [eip8141SolcPlugin],
   paths: { sources: "src" },
   solidity: {
-    version: "0.8.36",
-    settings: { optimizer: { enabled: true, runs: 200 } },
+    compilers: [{ version: "0.8.36", settings: { optimizer: { enabled: true, runs: 200 } } }],
+    // The vendored SPHINCS verifier is one large assembly block and only fits the stack
+    // through the IR pipeline. It uses no EIP-8141 opcode, so it is the one file built this
+    // way; nothing else imports it.
+    overrides: {
+      "src/pq/SphincsVerifier.sol": { version: "0.8.36", settings: { optimizer: { enabled: true, runs: 200 }, viaIR: true } },
+    },
   },
   networks: {
     hegota: {
       type: "http",
       chainType: "l1",
-      url: env.DEVNET_RPC ?? "https://rpc1.hegota.ethrex.xyz",
+      url: hegotaEnv.DEVNET_RPC ?? "https://rpc1.hegota.ethrex.xyz",
       chainId: 3151908,
-      accounts: privateKey === undefined ? [] : [privateKey],
+      accounts: keys(hegotaEnv),
+    },
+    // ethpandaops' EIP-8141 + EIP-8250 devnet (geth / reth / ethrex). The public RPC is an
+    // eRPC proxy that drops non-standard methods, so ethrex_simulateFrameTransaction is
+    // unavailable through it.
+    bogota: {
+      type: "http",
+      chainType: "l1",
+      url: bogotaEnv.DEVNET_RPC ?? "https://rpc.bogota-devnet-1.ethpandaops.io",
+      chainId: 7038851975,
+      accounts: keys(bogotaEnv),
+    },
+    // ethrex's public Hegota testnet. Same wire format and TXPARAM layout as bogota, but
+    // NONCE_MANAGER is still at 0x...8250 (see nonceManagerFor), and it serves
+    // ethrex_simulateFrameTransaction.
+    "hegota-testnet": {
+      type: "http",
+      chainType: "l1",
+      url: testnetEnv.DEVNET_RPC ?? "https://rpc1.privacy.ethrex.xyz",
+      chainId: 8141,
+      accounts: keys(testnetEnv),
     },
   },
 };

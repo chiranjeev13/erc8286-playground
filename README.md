@@ -16,8 +16,11 @@ SPEC.md           Snapshot of the ERC text
 
 | Contract | Role |
 |---|---|
-| `ERC8286FrameAccount` | Compliant account using EIP-8141 `verbatim` opcodes |
+| `ERC8286FrameAccount` | The account: both execution routes, chosen at creation; EIP-8141 `verbatim` opcodes |
 | `ECDSAFrameValidator` | Frame validator (module type `11`) with ECDSA over sender-frame digest |
+| `SphincsFrameValidator` | Post-quantum frame validator: a SPHINCS (hash-based) signature over the same digest |
+| `ERC8286AccountFactory` | Creates accounts as clones with their configuration in code; usable from a deploy frame |
+| `Paymaster` | Pays for any transaction whose pay frame reaches it; demo only |
 | `IERC8286FrameAccount` / `IFrameValidator` | Spec interfaces |
 
 ### Building
@@ -103,6 +106,40 @@ A keyed nonce has its own sequence in the `NONCE_MANAGER` predeploy (`0x…8250`
 > is `len(signatures)` in EIP-8141; EIP-8250 pins `TXPARAM_NONCE_KEY_0 = 0x10`, which is what
 > ethrex ships and what this account reads.
 
+### Post-quantum validator
+
+EIP-8141 checks no signature of its own for a frame transaction. The account does, in its
+VERIFY frame, with whatever validator it installed. That makes the signature scheme a module
+choice rather than a protocol change, and it is the reason the EIP exists in the first place:
+a quantum-safe signer has to be deployable before the curve is broken, without a fork.
+
+`SphincsFrameValidator` is that signer. It stores `(pkSeed, pkRoot)` in the account's storage
+under its own ERC-7201 slot, and `validateFrame` accepts a 6,176-byte sphincs-g signature
+over `LibFrameTxDigest.digest(account)`, the same EIP-712 message the ECDSA validator
+recovers against. Nothing on the path touches an elliptic curve; forging an approval means
+inverting keccak256. The account does not know which validator it has: `verify()` reads
+`nonce_keys[0]`, delegatecalls, masks the result with the frame's allowed scope and approves.
+
+The verifier (`src/pq/SphincsVerifier.sol`) and the JavaScript signer are
+[RivaLabs](https://github.com/RivaLabs-Core/Post-Quantum-AA-Infra)' experimental sphincs-g parameter set
+(n=16 h=20 d=5 a=9 k=19 w=16, keccak256). It is not
+standardized SLH-DSA and is unaudited. It compiles through the IR pipeline alone (a Hardhat
+override), since its single assembly block does not fit the legacy stack, and nothing imports it.
+
+Measured on the Hegota testnet: the VERIFY frame uses about 389k gas, under the 500k
+`MAX_VERIFY_GAS` mempool cap, and a whole self-paid transfer costs about 608k with the
+signature's calldata. Signing takes about 300 ms in JavaScript (`site/src/lib/pq/sphincs.mjs`,
+the browser signer from the same demo). The playground creates such accounts from a key
+generated in the browser, kept in localStorage: no wallet can hold one yet.
+
+```bash
+npm run deploy:pq:testnet   # SphincsVerifier_v2, then SphincsFrameValidator(verifier)
+```
+
+An account is created with `initData = abi.encode(pkSeed, pkRoot)`, each a 16-byte value in
+the top half of its word. A rogue or tampered signature fails validation (`APPROVE_NONE`, so
+`verify()` reverts), which the node reports as `validation prefix frame reverted`.
+
 ### Approval scopes
 
 ERC-8286 does not require an account to grant every approval mode. `approvalScopes` is a
@@ -147,82 +184,70 @@ change must itself present a shape the current setting still supports.
 
 ### Account deployment
 
-There is no factory contract. The [EIP-7997](https://eips.ethereum.org/EIPS/eip-7997)
-deterministic-deployment predeploy at `0x4e59…956C` is the factory: its calldata is
-`salt(32) || initcode`, it `CREATE2`s that, and it mixes **nothing about the caller** into the
-address. So an account's address follows from its creation code and salt alone, and a factory
-contract would only be re-deriving what anyone can derive.
-
-[`scripts/lib/accounts.ts`](scripts/lib/accounts.ts) does the deriving:
+Accounts are EIP-1167 clones of a shared implementation, created by
+[`ERC8286AccountFactory`](src/ERC8286AccountFactory.sol), with their initial configuration
+appended to their own runtime code (OpenZeppelin's immutable-args layout). Nothing is written
+to storage at creation. [`LibCloneConfig`](src/lib/LibCloneConfig.sol) reads it back:
 
 ```
-initCode      = initialize(validator, owner, approvalScopes, executionModes) calldata
-salt          = keccak256(keccak256(initCode) || index)          # a convention, not a rule
-creationCode  = ERC8286AccountProxy creation code || abi.encode(implementation, initCode)
-account       = CREATE2(0x4e59…956C, salt, keccak256(creationCode))
+args     = validator (20) || approvalScopes (1) || modeBits (1) || executionRoute (1) || initData
+             modeBits: bit 0 single, 1 single-atomic, 2 batch, 3 batch-atomic
+             executionRoute: 0x00 protocol-dispatched, 0x01 contract-dispatched
+             initData: the owner address (ECDSA) or pkSeed || pkRoot, 16 bytes each (SPHINCS)
+account  = CREATE2(factory, salt, clone code || args)     # factory.predict(impl, args, salt)
 ```
 
-An account is [`ERC8286AccountProxy`](src/ERC8286AccountProxy.sol) — OpenZeppelin's
-`ERC1967Proxy` under a local name, so the creation code is a compiled artifact of this repo and
-whatever derives the address agrees byte for byte on the code being deployed. The proxy's
-constructor delegatecalls the init code, so the account's configuration is written to the
-proxy's storage as it is deployed and is committed by its address: nobody can occupy your
-address with a different validator or owner. `index` gives one configuration many accounts.
+The account's getters consult storage first and fall back to the code: `setApprovalScopes`
+and `setExecutionMode` write overrides, `installModule` adds validators beside the configured
+one. The validators do the same for their key, so `onInstall` never runs for a clone. An
+account deployed with its constructor has no code configuration and is written to storage
+as before. Why this shape: under EIP-8037 a fresh slot costs 97,920 state gas, a byte of code
+1,530, and the deploy prefix below may spend 500,000 in all.
 
 ```bash
-npm run create:account
+npm run deploy:factory:testnet   # validators, both implementations, the factory
 ```
 
-`index` picks the account and `fund` is the ETH it starts with — both constants at the top of
-[`scripts/create-account.ts`](scripts/create-account.ts), since `hardhat run` forwards no
-positional arguments. The implementation is reused from `.env.devnet` whenever one is recorded
-there and still has code; one implementation serves every account. The script writes the
-account to `ERC8286FRAMEACCOUNT_ADDRESS`, so `npm run send` and `npm run send:batch` then
-target it.
-
-Deployment and funding are two transactions. The predeploy `CREATE2`s with the call's value,
-and `DELEGATECALL` preserves `callvalue`, so value would reach `initialize` and on to the
-module's `onInstall` — non-payable in `IERC7579Module`, and Solidity forbids widening that in
-an override, so the install reverts with only `install failed` to show for it. Accounts are
-deployed with no value and funded by a plain transfer, which `receive()` accepts.
-
-An account reached through a proxy validates frame transactions normally, which is not
-obvious: the `VERIFY` frame delegatecalls twice (proxy → implementation → validator) and reads
-the ERC-1967 implementation slot on the way. Both storage reads are on the sender, which is
-what the ERC-7562-style validation rules require, and ethrex admits the transaction. It costs
-about 6k more gas than a directly deployed account.
+One implementation serves both execution routes. The route is part of the configuration and
+fixed for the account's life: on the contract route `execute` opens and `verify` clears the
+execution bit unless every SENDER frame targets the account (ERC-8286 verify step 5); on
+the protocol route `execute` is closed and the protocol calls the targets itself.
 
 ### Deploying the sender inside its own transaction
 
-Because the address is caller-independent, the account can be deployed by an EIP-8141 `DEFAULT`
-frame that calls the predeploy — EIP-8141 example 1b, the flow that lets an account pay for the
-transaction that creates it. [`scripts/send-deploy-and-send.ts`](scripts/send-deploy-and-send.ts)
-(`npm run send:deploy`) builds it:
+Since the address is known in advance, the account can be created by an EIP-8141 `DEFAULT`
+frame that calls the factory, in the very transaction it then approves and pays for. ethrex
+reports the shape as `DeploySelfVerify` or, with a paymaster, `DeployOnlyVerifyPay`:
 
 ```
-frame[0]  DEFAULT, target = 0x4e59…956C, data = salt || creation code   -> CREATE2s the account
-frame[1]  VERIFY,  target = empty (resolves to tx.sender), flags 0x03   -> it validates
-frame[2]  SENDER,  target = recipient, value = amount
+frame[0]  DEFAULT, target = factory, data = createAccount(impl, args, salt)   -> the clone appears
+frame[1]  VERIFY,  target = account, flags 0x03 (0x02 with a paymaster)       -> it approves
+frame[2]  VERIFY,  target = paymaster, flags 0x01                             -> optional
+frame[3]  SENDER,  ...
 ```
 
-ethrex recognises the shape — it reports `prefixShape: "DeploySelfVerify"` — but **this account
-is too expensive to deploy there.** Every frame before the first `SENDER` frame shares one gas
-budget, `MAX_VERIFY_GAS` = 500,000, and on this devnet:
+The frames before the first `SENDER` frame share two budgets: 500,000 gas and 500,000 state
+gas, both summed over the declared limits. Measured on the Hegota testnet:
 
-| | gas |
-|---|---|
-| empty contract via the predeploy | 213,105 |
-| ERC-1167 minimal clone (45 bytes) | 283,383 |
-| `ERC8286AccountProxy`, no config written | 690,493 |
-| … + `initialize`, 1 mode / 4 modes | 1,132,629 / 1,476,689 |
+| | gas | state gas |
+|---|---|---|
+| creating any account at all | | 183,600 |
+| clone code, 45 bytes | | 68,850 |
+| configuration, 42 bytes (ECDSA) / 54 bytes (SPHINCS) | | 64,260 / 82,620 |
+| the deploy frame in total | 22,645 | 316,710 / 335,070 |
+| keyed nonce slot, in the VERIFY or pay frame | | 97,920 |
+| VERIFY, ECDSA / SPHINCS | about 35k / about 402k to 416k | |
+| pay frame | 10,012 | |
 
-So no choice of frame gas limits fits: the proxy alone is over budget before a single config
-slot is written, and `initialize` adds ~442k more, most of it seven separate storage writes
-(`approvalScopes`, one per execution mode, `isValidatorInstalled`, and the module's owner).
-Fitting under 500k needs both a leaner proxy — an ERC-1167 clone keeps the implementation in
-code and skips the implementation-slot write — and a packed configuration, since a validator
-address, the scope bits and a four-bit mode mask fit in a single word. Both are changes to the
-account, not to the deployment path.
+Every variant fits, with the SPHINCS plus paymaster one the tightest: the playground declares
+30k, 455k and 15k for its three prefix frames. A prefunded address is cheaper still, since the
+transfer already created the account record and only the code is left to pay for (151,470).
+Two things had to give way for this: the storage layout above, and `Create2.deploy`, whose
+balance check uses `SELFBALANCE`, an opcode banned in validation frames; the factory runs a
+bare `CREATE2` instead.
+
+Mined examples: a wallet account paid by a paymaster (block 464681), a post-quantum account
+paid by a paymaster (464691), and a prefunded post-quantum account paying for itself (464690).
 
 ### Devnet: sending a frame transaction
 
@@ -275,10 +300,24 @@ forge test -vv
 
 1. Require executing frame mode is `VERIFY`
 2. Select installed frame validator (module type `11`)
-3. `approvalMode = validateFrame(...) & allowedScope`
+3. `approvalMode = validateFrame(data) & allowedScope` — the validator reads frame index,
+   allowed scope, and frame contents through introspection, never as arguments, and
+   confirms the frame targets its account (`LibERC8286.isTargetedFrame`) and binds the
+   signature to `tx.sender` in the EIP-712 message, so the account may also be only the payer
 4. If execution bit set and any presented `SENDER` frame mode is unsupported → clear execution bit
-5. If `APPROVE_NONE` → revert (do not `APPROVE`)
-6. Else `APPROVE(approvalMode)`
+5. If execution bit set, the account is contract-dispatched, and any `SENDER` frame resolves
+   to another target → clear execution bit
+6. If `APPROVE_NONE` → revert (do not `APPROVE`)
+7. Else `APPROVE(approvalMode)`
+
+## Execution route
+
+`executionRoute()` declares how `SENDER` frames execute: `0x00` protocol-dispatched (frames
+call their targets directly) or `0x01` contract-dispatched (every frame targets the account,
+which dispatches through ERC-7579's `execute`). This account is protocol-dispatched: it has
+no `execute`, so all policy lives in validation. Step 5 is what makes contract dispatch a
+guarantee rather than a convention — a subclass that overrides `executionRoute` gets it from
+`verify` unchanged.
 
 ## SENDER frame execution modes
 

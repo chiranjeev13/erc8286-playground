@@ -20,19 +20,15 @@
 // outer signature.
 import {
   bytesToHex,
-  concat,
   encodeFunctionData,
   formatEther,
   getAddress,
   hexToBytes,
-  keccak256,
-  numberToHex,
-  pad,
   size,
   type Hex,
 } from "viem";
-import { Frame, FrameMode, FrameTx, authDigest } from "./lib/frametx.js";
-import { connect, need, type FrameSimulation, type TypedReceipt } from "./lib/connect.js";
+import { Frame, FrameMode, FrameTx, KEYED_NONCE_STATE_GAS, authDigest, nonceManagerFor, nonceSlot } from "./lib/frametx.js";
+import { connect, need, simulate, type TypedReceipt } from "./lib/connect.js";
 
 const APPROVE_SCOPE_EXECUTION_AND_PAYMENT = 0x03;
 
@@ -74,8 +70,8 @@ async function sendRaw(url: string, rawTx: string): Promise<void> {
 const to = getAddress("0x000000000000000000000000000000000000dEaD");
 /** Wei to transfer. */
 const amount = 1_000_000_000_000_000n;
-/** Submit it, rather than simulating only. */
-const submit: boolean = false;
+/** Submit it, rather than simulating only (`SUBMIT=1 npm run send` also does). */
+const submit: boolean = process.env.SUBMIT === "1";
 /** Corrupt the signature on purpose, as a negative control. */
 const badSig: boolean = false;
 /** Submit even if the prefix simulation says invalid. */
@@ -90,12 +86,11 @@ const validator = getAddress(need(env, "ECDSAFRAMEVALIDATOR_ADDRESS", hint));
 // of the signed envelope, so a relayer cannot substitute another validator.
 const nonceKeys = [BigInt(validator)];
 
-// A keyed nonce has its own sequence in NONCE_MANAGER at keccak256(pad32(sender) || pad32(key)).
-const NONCE_MANAGER = "0x0000000000000000000000000000000000008250";
-const nonceSlot = keccak256(
-  concat([pad(account, { size: 32 }), numberToHex(nonceKeys[0]!, { size: 32 })]),
-);
-const stored = await client.getStorageAt({ address: NONCE_MANAGER, slot: nonceSlot });
+// A keyed nonce has its own sequence in NONCE_MANAGER.
+const stored = await client.getStorageAt({
+  address: nonceManagerFor(chainId),
+  slot: nonceSlot(account, nonceKeys[0]!),
+});
 const nonce = Number(BigInt(stored ?? "0x0"));
 const balance = await client.getBalance({ address: account });
 const block = await client.getBlock();
@@ -111,6 +106,8 @@ const senderFrame = new Frame({
   mode: FrameMode.SENDER,
   target: to,
   gasLimit: 30_000,
+  // EIP-8037: a transfer that creates the recipient account pays 120 state bytes.
+  stateGasLimit: 200_000,
   value: amount,
 });
 
@@ -150,6 +147,7 @@ const tx = new FrameTx({
       flags: APPROVE_SCOPE_EXECUTION_AND_PAYMENT,
       target: account,
       gasLimit: 200_000,
+      stateGasLimit: KEYED_NONCE_STATE_GAS,
       data: verifyData,
     }),
     senderFrame,
@@ -166,17 +164,17 @@ console.log(`raw type-0x06 tx: ${size(raw)} bytes`);
 // eth_call cannot represent a frame transaction, so ethrex exposes a dedicated dry-run that
 // takes the exact bytes eth_sendRawTransaction would. `valid` covers only the EIP-8141
 // validation prefix -- necessary for admission, not sufficient.
-const sim: FrameSimulation = await client.request({
-  method: "ethrex_simulateFrameTransaction",
-  params: [raw, "latest"],
-});
-console.log("\n--- ethrex_simulateFrameTransaction ---");
-console.log(JSON.stringify(sim, null, 2));
-
-if (!sim.valid) {
-  console.log(`\nINVALID: ${sim.violation}`);
-  if (!(force && submit)) process.exit(1);
-  console.log("FORCE: submitting anyway");
+// `null` where the endpoint has no dry-run (see `simulate`); the transaction then goes out
+// unsimulated, and the receipt is the only verdict.
+const sim = await simulate(client, raw);
+if (sim !== null) {
+  console.log("\n--- ethrex_simulateFrameTransaction ---");
+  console.log(JSON.stringify(sim, null, 2));
+  if (!sim.valid) {
+    console.log(`\nINVALID: ${sim.violation}`);
+    if (!(force && submit)) process.exit(1);
+    console.log("FORCE: submitting anyway");
+  }
 }
 
 if (!submit) {

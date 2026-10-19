@@ -34,6 +34,18 @@ library LibERC8286 {
     uint256 internal constant MODULE_TYPE_FRAME_VALIDATOR = 11;
 
     /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
+    /*                     EXECUTION ROUTES                       */
+    /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
+
+    /// @dev SENDER frames call their targets directly; the account takes no part in
+    /// execution, so all policy is enforced at validation time.
+    uint8 internal constant EXECUTION_ROUTE_PROTOCOL = 0x00;
+
+    /// @dev Every SENDER frame targets the account, which dispatches through ERC-7579's
+    /// `execute`. Only a guarantee if `verify` checks `allSenderFramesTargetSelf`.
+    uint8 internal constant EXECUTION_ROUTE_CONTRACT = 0x01;
+
+    /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
     /*                        FRAME MODES                         */
     /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
 
@@ -108,6 +120,16 @@ library LibERC8286 {
             || mode == FRAME_MODE_BATCH || mode == FRAME_MODE_BATCH_ATOMIC;
     }
 
+    /// @dev One bit per frame mode, for a configuration packed into a byte: single 0x1,
+    /// single-atomic 0x2, batch 0x4, batch-atomic 0x8. Zero for anything else.
+    function modeBit(bytes32 mode) internal pure returns (uint8) {
+        if (mode == FRAME_MODE_SINGLE) return 0x1;
+        if (mode == FRAME_MODE_SINGLE_ATOMIC) return 0x2;
+        if (mode == FRAME_MODE_BATCH) return 0x4;
+        if (mode == FRAME_MODE_BATCH_ATOMIC) return 0x8;
+        return 0;
+    }
+
     /// @dev The mode for the given (batch, atomic) pair.
     function frameMode(bool batch, bool atomic) internal pure returns (bytes32) {
         if (atomic) return batch ? FRAME_MODE_BATCH_ATOMIC : FRAME_MODE_SINGLE_ATOMIC;
@@ -159,24 +181,25 @@ library LibERC8286 {
     /*                  KEYED NONCES (EIP-8250)                   */
     /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
 
-    /// @dev `TXPARAM(0x0C)`: the sender's pre-state legacy nonce.
+    /// @dev `TXPARAM(0x0D)`: the sender's pre-state legacy nonce. (`0x0C` is EIP-8141's
+    /// `state_gas_left`.)
     function legacyNonce() internal view returns (uint256 result) {
-        assembly {
-            result := txparam(0x0c)
-        }
-    }
-
-    /// @dev `TXPARAM(0x0D)`: `len(tx.nonce_keys)`.
-    function nonceKeyCount() internal view returns (uint256 result) {
         assembly {
             result := txparam(0x0d)
         }
     }
 
-    /// @dev `TXPARAM(0x0E)`: `keccak256(be32(len) || be32(k0) || ...)` over the key set.
-    function nonceKeysHash() internal view returns (bytes32 result) {
+    /// @dev `TXPARAM(0x0E)`: `len(tx.nonce_keys)`.
+    function nonceKeyCount() internal view returns (uint256 result) {
         assembly {
             result := txparam(0x0e)
+        }
+    }
+
+    /// @dev `TXPARAM(0x0F)`: `keccak256(be32(len) || be32(k0) || ...)` over the key set.
+    function nonceKeysHash() internal view returns (bytes32 result) {
+        assembly {
+            result := txparam(0x0f)
         }
     }
 
@@ -276,6 +299,27 @@ library LibERC8286 {
         for (uint256 i = 0; i < n; i++) {
             if (frameModeOf(i) == MODE_SENDER) count++;
         }
+    }
+
+    /// @dev Whether every SENDER frame resolves to `address(this)`. A contract-dispatched
+    /// account MUST hold this before approving execution: one frame pointed elsewhere would
+    /// run as `tx.sender` past its `execute`.
+    function allSenderFramesTargetSelf() internal view returns (bool) {
+        uint256 n = frameCount();
+        for (uint256 i = 0; i < n; i++) {
+            if (frameModeOf(i) != MODE_SENDER) continue;
+            if (frameTarget(i) != address(this)) return false;
+        }
+        return true;
+    }
+
+    /// @dev Whether the executing frame targets the account running this code. Under
+    /// DELEGATECALL `address(this)` is the account, so this is how a module tells a frame
+    /// aimed at its account from one it was merely called from. The account may be the
+    /// transaction's sender or only its payer, so `tx.sender` is not compared here; a
+    /// validator binds its signature to the sender instead.
+    function isTargetedFrame() internal view returns (bool) {
+        return frameTarget(currentFrameIndex()) == address(this);
     }
 
     /// @dev The mode SENDER frame `i` presents. `batch` is `senderFrameCount() > 1`, taken

@@ -1,0 +1,332 @@
+@import "tailwindcss";
+@import "@fontsource-variable/roboto";
+@import "@fontsource-variable/roboto-mono";
+
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --animate-skeleton: skeleton 2s -1s infinite linear;
+    --animate-caret-blink: 1s ease-out infinite caret-blink;
+    --animate-toast-success-odd: toast-success-odd 0.32s cubic-bezier(0.5, 1, 0.89, 1);
+    --animate-toast-success-even: toast-success-even 0.32s cubic-bezier(0.5, 1, 0.89, 1);
+    --animate-toast-error-odd: toast-error-odd 0.28s cubic-bezier(0.5, 1, 0.89, 1);
+    --animate-toast-error-even: toast-error-even 0.28s cubic-bezier(0.5, 1, 0.89, 1);
+    --font-heading: 'Roboto Variable', sans-serif;
+    --font-mono: 'Roboto Mono Variable', monospace;
+    --font-sans: 'Roboto Variable', sans-serif;
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar: var(--sidebar);
+    --color-code-highlight: var(--code-highlight);
+    --code-foreground: var(--code-foreground);
+    --color-code: var(--code);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-ring: var(--ring);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-input: var(--input);
+    --color-foreground: var(--foreground);
+    --color-destructive: var(--destructive);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-border: var(--border);
+    --color-background: var(--background);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-warning-foreground: var(--warning-foreground);
+    --color-warning: var(--warning);
+    --color-success-foreground: var(--success-foreground);
+    --color-success: var(--success);
+    --color-info-foreground: var(--info-foreground);
+    --color-info: var(--info);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+  @keyframes skeleton {
+  to {
+    background-position: -200% 0;
+        }
+    }
+  @keyframes caret-blink {
+  0%, 70%, to {
+    opacity: 1;
+        }
+  20%, 50% {
+    opacity: 0;
+        }
+    }
+  @keyframes toast-success-odd {
+  0% {
+    scale: 1;
+        }
+  30% {
+    scale: 1.025;
+        }
+  60% {
+    scale: 0.99;
+        }
+  100% {
+    scale: 1;
+        }
+    }
+  @keyframes toast-error-odd {
+  0% {
+    translate: 0 0;
+        }
+  25% {
+    translate: -3px 0;
+        }
+  50% {
+    translate: 3px 0;
+        }
+  75% {
+    translate: -3px 0;
+        }
+  100% {
+    translate: 0 0;
+        }
+    }
+  @keyframes toast-success-even {
+  0% {
+    scale: 1;
+        }
+  30% {
+    scale: 1.025;
+        }
+  60% {
+    scale: 0.99;
+        }
+  100% {
+    scale: 1;
+        }
+    }
+  @keyframes toast-error-even {
+  0% {
+    translate: 0 0;
+        }
+  25% {
+    translate: -3px 0;
+        }
+  50% {
+    translate: 3px 0;
+        }
+  75% {
+    translate: -3px 0;
+        }
+  100% {
+    translate: 0 0;
+        }
+    }
+}
+
+:root {
+    --destructive-foreground: var(--color-red-700);
+    --info: var(--color-blue-500);
+    --info-foreground: var(--color-blue-700);
+    --success: var(--color-emerald-500);
+    --success-foreground: var(--color-emerald-700);
+    --warning: var(--color-amber-500);
+    --warning-foreground: var(--color-amber-700);
+    --accent: --alpha(var(--color-black) / 4%);
+    --accent-foreground: var(--color-neutral-800);
+    --background: var(--color-white);
+    --border: --alpha(var(--color-black) / 8%);
+    --card: var(--color-white);
+    --card-foreground: var(--color-neutral-800);
+    --destructive: var(--color-red-500);
+    --foreground: var(--color-neutral-800);
+    --input: --alpha(var(--color-black) / 10%);
+    --muted: --alpha(var(--color-black) / 4%);
+    --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-black));
+    --popover: var(--color-white);
+    --popover-foreground: var(--color-neutral-800);
+    --primary: var(--color-neutral-800);
+    --primary-foreground: var(--color-neutral-50);
+    --ring: var(--color-neutral-400);
+    --secondary: --alpha(var(--color-black) / 4%);
+    --secondary-foreground: var(--color-neutral-800);
+    --chart-1: var(--color-orange-600);
+    --chart-2: var(--color-teal-600);
+    --chart-3: var(--color-cyan-900);
+    --chart-4: var(--color-amber-400);
+    --chart-5: var(--color-amber-500);
+    --code: var(--color-white);
+    --code-foreground: var(--foreground);
+    --code-highlight: --alpha(var(--color-black) / 4%);
+    --radius: 0.625rem;
+    --sidebar: var(--color-neutral-50);
+    --sidebar-accent: --alpha(var(--color-black) / 4%);
+    --sidebar-accent-foreground: var(--color-neutral-800);
+    --sidebar-border: --alpha(var(--color-black) / 6%);
+    --sidebar-foreground: color-mix(in srgb, var(--color-neutral-800) 64%, var(--sidebar));
+    --sidebar-primary: var(--color-neutral-800);
+    --sidebar-primary-foreground: var(--color-neutral-50);
+    --sidebar-ring: var(--color-neutral-400);
+}
+
+.dark {
+    --destructive-foreground: var(--color-red-400);
+    --info: var(--color-blue-500);
+    --info-foreground: var(--color-blue-400);
+    --success: var(--color-emerald-500);
+    --success-foreground: var(--color-emerald-400);
+    --warning: var(--color-amber-500);
+    --warning-foreground: var(--color-amber-400);
+    --accent: --alpha(var(--color-white) / 4%);
+    --accent-foreground: var(--color-neutral-100);
+    --background: color-mix(in srgb, var(--color-neutral-950) 95%, var(--color-white));
+    --border: --alpha(var(--color-white) / 6%);
+    --card: color-mix(in srgb, var(--background) 98%, var(--color-white));
+    --card-foreground: var(--color-neutral-100);
+    --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
+    --foreground: var(--color-neutral-100);
+    --input: --alpha(var(--color-white) / 8%);
+    --muted: --alpha(var(--color-white) / 4%);
+    --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
+    --popover: color-mix(in srgb, var(--background) 98%, var(--color-white));
+    --popover-foreground: var(--color-neutral-100);
+    --primary: var(--color-neutral-100);
+    --primary-foreground: var(--color-neutral-800);
+    --ring: var(--color-neutral-500);
+    --secondary: --alpha(var(--color-white) / 4%);
+    --secondary-foreground: var(--color-neutral-100);
+    --chart-1: var(--color-blue-700);
+    --chart-2: var(--color-emerald-500);
+    --chart-3: var(--color-amber-500);
+    --chart-4: var(--color-purple-500);
+    --chart-5: var(--color-rose-500);
+    --code: color-mix(in srgb, var(--background) 98%, var(--color-white));
+    --code-foreground: var(--foreground);
+    --code-highlight: --alpha(var(--color-white) / 4%);
+    --sidebar: color-mix(in srgb, var(--color-neutral-950) 97%, var(--color-white));
+    --sidebar-accent: --alpha(var(--color-white) / 4%);
+    --sidebar-accent-foreground: var(--color-neutral-100);
+    --sidebar-border: --alpha(var(--color-white) / 5%);
+    --sidebar-foreground: color-mix(in srgb, var(--color-neutral-100) 64%, var(--sidebar));
+    --sidebar-primary: var(--color-neutral-100);
+    --sidebar-primary-foreground: var(--color-neutral-800);
+    --sidebar-ring: var(--color-neutral-400);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    }
+  code, kbd, samp, pre {
+    font-family: var(--font-mono);
+    }
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    }
+  html {
+    @apply font-sans font-mono;
+    }
+}
+/* The pixel wizard in the header. Pixel art stays crisp when scaled; motion is transform
+   only, and stilled under reduced motion. */
+.mascot { image-rendering: pixelated; border-radius: 0.375rem; transform-origin: 50% 90%; }
+.mascot[data-state="idle"] { animation: mascot-float 3.2s ease-in-out infinite; }
+.mascot[data-state="casting"] { animation: mascot-cast 0.7s ease-in-out infinite; }
+.mascot[data-state="hop"] { animation: mascot-hop 0.9s cubic-bezier(0.3, 1.4, 0.5, 1) 2; }
+.mascot[data-state="slump"] { animation: mascot-slump 0.6s ease-out forwards; }
+@keyframes mascot-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+@keyframes mascot-cast {
+  0%, 100% { transform: rotate(-6deg) translateY(0); }
+  50% { transform: rotate(6deg) translateY(-2px); }
+}
+@keyframes mascot-hop {
+  0%, 100% { transform: translateY(0) scale(1); }
+  30% { transform: translateY(-10px) scale(1.08) rotate(-8deg); }
+  60% { transform: translateY(0) scale(0.96); }
+}
+@keyframes mascot-slump {
+  to { transform: rotate(12deg) translateY(2px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mascot { animation: none !important; transform: none !important; }
+}
+
+/* Background rain of the wizard. Fixed, behind everything, no pointer events. */
+.rain { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.rain-drop {
+  position: absolute; top: -60px; opacity: 0;
+  image-rendering: pixelated; border-radius: 0.25rem;
+  animation-name: rain-fall; animation-timing-function: linear; animation-iteration-count: infinite;
+  will-change: transform, opacity;
+}
+@keyframes rain-fall {
+  0% { transform: translate3d(0, 0, 0) rotate(0deg); opacity: 0; }
+  8% { opacity: 0.08; }
+  92% { opacity: 0.08; }
+  100% { transform: translate3d(var(--sway), 110vh, 0) rotate(var(--spin)); opacity: 0; }
+}
+.dark .rain-drop { filter: invert(1); }
+@media (prefers-reduced-motion: reduce) {
+  .rain { display: none; }
+}
+
+/* Result step replay: a cursor walks the frames in order. */
+.replay { display: flex; flex-direction: column; }
+.replay-row {
+  display: grid; grid-template-columns: 1.5rem auto minmax(0, 1fr) 9rem 7rem; align-items: center; gap: 0.75rem;
+  padding: 0.5rem 0.5rem; border-top: 1px solid var(--border); opacity: 0.4;
+  transition: opacity 0.3s, background-color 0.3s;
+}
+.replay-row.is-reached { opacity: 1; }
+.replay-row.is-cursor { opacity: 1; background: color-mix(in srgb, var(--primary) 8%, transparent); }
+.replay-row.is-cursor .replay-index { color: var(--primary); font-weight: 600; }
+.replay-index { color: var(--muted-foreground); }
+.replay-approve { display: block; animation: replay-fade 0.4s ease-out both; }
+.replay-fuel { position: relative; display: block; height: 1.25rem; overflow: hidden; border-radius: 0.25rem; background: color-mix(in srgb, var(--muted-foreground) 15%, transparent); }
+.replay-fuel-bar { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--success) 55%, transparent); transition: width 0.7s ease-out; }
+.replay-row[data-outcome="bad"] .replay-fuel-bar { background: color-mix(in srgb, var(--destructive) 60%, transparent); }
+.replay-row[data-outcome="rolled"] .replay-fuel-bar, .replay-row[data-outcome="skip"] .replay-fuel-bar { background: color-mix(in srgb, var(--warning) 55%, transparent); }
+.replay-fuel-text { position: absolute; inset: 0; display: flex; align-items: center; justify-content: flex-end; padding: 0 0.4rem; font-size: 0.7rem; color: var(--foreground); }
+.replay-verdict { display: flex; justify-content: flex-end; }
+.replay-verdict > * { animation: replay-fade 0.3s ease-out both; }
+.replay-divider {
+  margin: 0.25rem 0; padding: 0.35rem 0.5rem; font-size: 0.75rem; color: var(--muted-foreground);
+  border-top: 1px dashed var(--border); border-bottom: 1px dashed var(--border); opacity: 0.4; transition: opacity 0.3s, background-color 0.3s;
+}
+.replay-divider.is-reached { opacity: 1; }
+.replay-divider.is-cursor { background: color-mix(in srgb, var(--primary) 8%, transparent); color: var(--foreground); }
+.replay-group { border-left: 3px solid color-mix(in srgb, var(--warning) 70%, transparent); background: color-mix(in srgb, var(--warning) 4%, transparent); }
+.replay-group-cont { border-top-color: transparent; }
+.replay-group-broken { border-left-color: var(--destructive); background: color-mix(in srgb, var(--destructive) 5%, transparent); }
+.replay-cell-on { border-color: color-mix(in srgb, var(--success) 60%, transparent); background: color-mix(in srgb, var(--success) 8%, transparent); transition: background-color 0.4s, border-color 0.4s; }
+@keyframes replay-fade {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .replay-approve, .replay-verdict > * { animation: none; }
+  .replay-fuel-bar { transition: none; }
+}

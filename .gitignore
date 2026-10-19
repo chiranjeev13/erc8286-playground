@@ -25,3 +25,6 @@ node_modules/
 # Hardhat
 artifacts/
 cache/
+
+# Accounts the playground deployed, keyed by owner wallet
+.playground-accounts.json

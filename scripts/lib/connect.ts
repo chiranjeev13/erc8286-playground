@@ -11,9 +11,7 @@ import {
 } from "viem";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { network } from "hardhat";
-import { config, type Env } from "./env.js";
-
-export const HEGOTA_CHAIN_ID = 3151908;
+import { config, envFileFor, type Env } from "./env.js";
 
 /**
  * The devnet, for viem's benefit: fee handling and local signing need a chain id.
@@ -21,12 +19,14 @@ export const HEGOTA_CHAIN_ID = 3151908;
  * `rpcUrls` is decorative -- the transport is Hardhat's connection, so `--network` is still
  * what picks the endpoint (see hardhat.config.ts, which reads DEVNET_RPC).
  */
-export const hegota = defineChain({
-  id: HEGOTA_CHAIN_ID,
-  name: "Hegota EIP-8141 devnet",
-  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-  rpcUrls: { default: { http: ["https://rpc1.hegota.ethrex.xyz"] } },
-});
+function devnet(name: string, id: number, url: string) {
+  return defineChain({
+    id,
+    name: `${name} EIP-8141 devnet`,
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    rpcUrls: { default: { http: [url] } },
+  });
+}
 
 /** One frame's outcome, as ethrex reports it. */
 export interface FrameResult {
@@ -88,10 +88,10 @@ type Eip1193 = {
   request: (args: { method: string; params?: readonly unknown[] | object }) => Promise<unknown>;
 };
 
-function makeClient(provider: Eip1193, account: PrivateKeyAccount) {
+function makeClient(provider: Eip1193, account: PrivateKeyAccount, chain: ReturnType<typeof devnet>) {
   return createClient({
     account,
-    chain: hegota,
+    chain,
     // Hardhat's provider is EIP-1193, so viem can drive it directly; the cast is only
     // because viem types `params` as `unknown` where Hardhat wants an array or object.
     transport: custom({
@@ -104,40 +104,62 @@ function makeClient(provider: Eip1193, account: PrivateKeyAccount) {
     .extend(walletActions);
 }
 
-export type HegotaClient = ReturnType<typeof makeClient>;
+export type DevnetClient = ReturnType<typeof makeClient>;
 
 export interface Connection {
   env: Env;
-  client: HegotaClient;
+  envFile: string;
+  network: string;
+  client: DevnetClient;
   account: PrivateKeyAccount;
   chainId: number;
 }
 
 /**
- * A client on the network `--network` selected, plus the parsed .env.devnet.
+ * A client on the network `--network` selected, plus that network's parsed env file.
  *
- * Hardhat supplies the transport (so `--network hegota` is what picks the endpoint) and
- * .env.devnet supplies the key. Deploying and funding here are ordinary type-2
+ * Hardhat supplies the transport (so `--network` is what picks the endpoint) and the env
+ * file (`envFileFor`) supplies the key. Deploying and funding here are ordinary type-2
  * transactions; only the frame transactions themselves are hand-encoded.
  */
 export async function connect(): Promise<Connection> {
-  const env = config(".env.devnet");
+  const connection = await network.getOrCreate();
+  const { networkName, networkConfig } = connection;
+  const envFile = envFileFor(networkName);
+  const env = config(envFile);
   const key = env.DEVNET_PRIVATE_KEY;
   if (key === undefined) {
-    throw new Error("DEVNET_PRIVATE_KEY missing from .env.devnet");
+    throw new Error(`DEVNET_PRIVATE_KEY missing from ${envFile}`);
   }
 
-  const connection = await network.getOrCreate();
+  const expected = networkConfig.chainId;
+  if (expected === undefined || networkConfig.type !== "http") {
+    throw new Error(`network ${networkName} needs an http url and chainId in hardhat.config.ts`);
+  }
+  const url = typeof networkConfig.url === "string" ? networkConfig.url : "";
+  const chain = devnet(networkName, expected, url);
   const account = privateKeyToAccount(key as Hex);
-  const client = makeClient(connection.provider, account);
+  const client = makeClient(connection.provider, account, chain);
   const chainId = await client.getChainId();
-  if (chainId !== HEGOTA_CHAIN_ID) {
-    throw new Error(
-      `unexpected chain id ${chainId} (want ${HEGOTA_CHAIN_ID} -- pass --network hegota)`,
-    );
+  if (chainId !== expected) {
+    throw new Error(`unexpected chain id ${chainId} on ${networkName} (want ${expected})`);
   }
 
-  return { env, client, account, chainId };
+  return { env, envFile, network: networkName, client, account, chainId };
+}
+
+/**
+ * `ethrex_simulateFrameTransaction`, or `null` where the endpoint does not serve it (a
+ * geth/reth node, or a proxy that drops non-standard methods, as bogota-devnet-1's does).
+ */
+export async function simulate(client: DevnetClient, raw: Hex): Promise<FrameSimulation | null> {
+  try {
+    return await client.request({ method: "ethrex_simulateFrameTransaction", params: [raw, "latest"] });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.log(`\nsimulation unavailable on this endpoint (${message.split("\n")[0]})`);
+    return null;
+  }
 }
 
 export interface Artifact {
@@ -145,25 +167,26 @@ export interface Artifact {
   bytecode: Hex;
 }
 
-/** Reads a compiled artifact from Hardhat's output. */
-export function artifact(contract: string): Artifact {
-  const path = `artifacts/src/${contract}.sol/${contract}.json`;
+/** Reads a compiled artifact from Hardhat's output. `source` is the path under src/ without
+ * the extension, when the file is not named after the contract. */
+export function artifact(contract: string, source = contract): Artifact {
+  const path = `artifacts/src/${source}.sol/${contract}.json`;
   return JSON.parse(readFileSync(path, "utf8")) as Artifact;
 }
 
-/** Appends (or replaces) a KEY=value line in .env.devnet. */
-export function saveEnv(key: string, value: string): void {
-  const lines = readFileSync(".env.devnet", "utf8")
+/** Appends (or replaces) a KEY=value line in the network's env file. */
+export function saveEnv(envFile: string, key: string, value: string): void {
+  const lines = readFileSync(envFile, "utf8")
     .split("\n")
     .filter((l) => l.trim() !== "");
   const kept = lines.filter((l) => !l.startsWith(`${key}=`));
   kept.push(`${key}=${value}`);
-  writeFileSync(".env.devnet", `${kept.join("\n")}\n`);
+  writeFileSync(envFile, `${kept.join("\n")}\n`);
 }
 
 /** Required environment variable, with a message that says how to produce it. */
 export function need(env: Env, key: string, hint: string): string {
   const value = env[key];
-  if (value === undefined) throw new Error(`${key} missing from .env.devnet -- ${hint}`);
+  if (value === undefined) throw new Error(`${key} missing from the env file -- ${hint}`);
   return value;
 }

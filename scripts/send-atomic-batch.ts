@@ -11,18 +11,15 @@
 // frame j does not. The flag therefore goes on every member *except* the last -- it reads as
 // "this frame is joined to the next one".
 import {
-  concat,
   encodeFunctionData,
   formatEther,
   getAddress,
-  keccak256,
-  numberToHex,
   size,
   type Address,
   type Hex,
 } from "viem";
-import { Frame, FrameMode, FrameTx, authDigest } from "./lib/frametx.js";
-import { connect, need, type FrameSimulation, type TypedReceipt } from "./lib/connect.js";
+import { Frame, FrameMode, FrameTx, KEYED_NONCE_STATE_GAS, authDigest, nonceManagerFor, nonceSlot } from "./lib/frametx.js";
+import { connect, need, simulate, type TypedReceipt } from "./lib/connect.js";
 
 const APPROVE_SCOPE_EXECUTION_AND_PAYMENT = 0x03;
 
@@ -60,7 +57,7 @@ const atomic: boolean = true;
 /** Append a SENDER frame that reverts, so an atomic group is seen to roll back. */
 const revertLast: boolean = false;
 /** Submit it, rather than simulating only. */
-const submit: boolean = false;
+const submit: boolean = true;
 /** Submit even if the prefix simulation says invalid. */
 const force: boolean = false;
 /** Wei per transfer. */
@@ -77,11 +74,10 @@ const account = getAddress(need(env, "ERC8286FRAMEACCOUNT_ADDRESS", hint));
 const validator = getAddress(need(env, "ECDSAFRAMEVALIDATOR_ADDRESS", hint));
 
 const nonceKeys = [BigInt(validator)];
-const NONCE_MANAGER = "0x0000000000000000000000000000000000008250";
-const nonceSlot = keccak256(
-  concat([numberToHex(BigInt(account), { size: 32 }), numberToHex(nonceKeys[0]!, { size: 32 })]),
-);
-const stored = await client.getStorageAt({ address: NONCE_MANAGER, slot: nonceSlot });
+const stored = await client.getStorageAt({
+  address: nonceManagerFor(chainId),
+  slot: nonceSlot(account, nonceKeys[0]!),
+});
 const nonce = Number(BigInt(stored ?? "0x0"));
 const balance = await client.getBalance({ address: account });
 const block = await client.getBlock();
@@ -93,7 +89,9 @@ console.log(`validator ${validator}  owner ${owner.address}`);
 
 // The SENDER frames, in the order the digest and the flag chain both walk them.
 const senderFrames = recipients.map(
-  (to) => new Frame({ mode: FrameMode.SENDER, target: to, gasLimit: 30_000, value: amount }),
+  (to) =>
+    // EIP-8037: a transfer that creates the recipient account pays 120 state bytes.
+    new Frame({ mode: FrameMode.SENDER, target: to, gasLimit: 300_000, stateGasLimit: 200_000, value: amount }),
 );
 
 if (revertLast) {
@@ -101,7 +99,7 @@ if (revertLast) {
     new Frame({
       mode: FrameMode.SENDER,
       target: validator,
-      gasLimit: 30_000,
+      gasLimit: 300_000,
       data: encodeFunctionData({
         abi: VALIDATOR_ABI,
         functionName: "ownerOf",
@@ -120,6 +118,7 @@ const grouped = senderFrames.map(
       flags: atomic && i < senderFrames.length - 1 ? ATOMIC_BATCH_FLAG : 0,
       target: f.target,
       gasLimit: f.gasLimit,
+      stateGasLimit: f.stateGasLimit,
       value: f.value,
       data: f.data,
     }),
@@ -160,6 +159,7 @@ const tx = new FrameTx({
       flags: APPROVE_SCOPE_EXECUTION_AND_PAYMENT,
       target: account,
       gasLimit: 200_000,
+      stateGasLimit: KEYED_NONCE_STATE_GAS,
       data: encodeFunctionData({ abi: VERIFY_ABI, functionName: "verify", args: [frameSig] }),
     }),
     ...grouped,
@@ -184,17 +184,17 @@ console.log(`raw type-0x06 tx: ${size(raw)} bytes`);
 
 const before = await Promise.all(recipients.map((to) => client.getBalance({ address: to })));
 
-const sim: FrameSimulation = await client.request({
-  method: "ethrex_simulateFrameTransaction",
-  params: [raw, "latest"],
-});
-console.log("\n--- ethrex_simulateFrameTransaction ---");
-console.log(JSON.stringify(sim, null, 2));
-
-if (!sim.valid) {
-  console.log(`\nINVALID: ${sim.violation}`);
-  if (!(force && submit)) process.exit(1);
-  console.log("FORCE: submitting anyway");
+// `null` where the endpoint has no dry-run (see `simulate`); the transaction then goes out
+// unsimulated, and the receipt is the only verdict.
+const sim = await simulate(client, raw);
+if (sim !== null) {
+  console.log("\n--- ethrex_simulateFrameTransaction ---");
+  console.log(JSON.stringify(sim, null, 2));
+  if (!sim.valid) {
+    console.log(`\nINVALID: ${sim.violation}`);
+    if (!(force && submit)) process.exit(1);
+    console.log("FORCE: submitting anyway");
+  }
 }
 
 if (!submit) {

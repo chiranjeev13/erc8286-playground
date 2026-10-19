@@ -249,6 +249,32 @@ bare `CREATE2` instead.
 Mined examples: a wallet account paid by a paymaster (block 464681), a post-quantum account
 paid by a paymaster (464691), and a prefunded post-quantum account paying for itself (464690).
 
+### Deploying the playground
+
+The playground in `site/` is a Vite app with a small API. In development the API is a Vite
+middleware (`site/server/frame-api.ts`); on Vercel the same handler runs as the function
+`api/pg/[[...route]].ts`, with `vercel.json` building the site from the repo root. The server
+holds no key and keeps no state: it reads the chain, predicts addresses, builds and simulates
+frame transactions, and relays the ones the browser signed. The browser remembers the accounts
+it created (address plus clone spec) and the post-quantum keys it generated, in localStorage.
+
+Deploy the contracts once with the scripts, then give the project these environment
+variables (the values `npm run deploy:factory:testnet` and `deploy:pq:testnet` wrote to
+`.env.hegota-testnet`):
+
+```
+DEVNET_RPC                      https://rpc1.privacy.ethrex.xyz
+ECDSAFRAMEVALIDATOR_ADDRESS
+SPHINCSFRAMEVALIDATOR_ADDRESS
+ERC8286ACCOUNTFACTORY_ADDRESS
+ERC8286FRAMEACCOUNT_ADDRESS
+PAYMASTER_ADDRESS
+```
+
+Funding is a person's job: new accounts are reserved unfunded (the faucet, or a
+paymaster-paid first transaction), and the paymaster is topped up at the faucet when the
+settings panel says it is low. The deployer key stays in the env file for the scripts only.
+
 ### Devnet: sending a frame transaction
 
 `.env.devnet` holds `DEVNET_PRIVATE_KEY`, `DEVNET_RPC`, and the deployed addresses (it is

@@ -1,4 +1,5 @@
 import { Plus, X } from "lucide-react";
+import { CopyAddress } from "@/components/CopyAddress";
 import { Hint } from "@/components/Hint";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,22 +12,23 @@ import { Radio, RadioGroup } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { ethStr, execute, frameHint, frameLabel, transfer, isAddress, short, BEEF, DEAD, QUICK_TARGETS, SCOPE_HINT, SCOPE_WORD, type Account, type FrameSpec, type Paymaster, type Scope, type Target, type VerifySpec } from "@/lib/api";
+import { ethStr, execute, frameHint, frameLabel, transfer, isAddress, BEEF, DEAD, QUICK_TARGETS, SCOPE_HINT, SCOPE_WORD, type Account, type FrameSpec, type Paymaster, type Scope, type Target, type VerifySpec } from "@/lib/api";
 
 interface Props {
   account: Account;
   verify: VerifySpec;
   frames: FrameSpec[];
   presetId: string | null;
-  paymasters: Paymaster[];
+  /** The common paymaster, once the server has it. */
+  paymaster: Paymaster | null;
   payer: Paymaster | null;
-  onPayer: (address: string | null) => void;
+  onPayer: (usePaymaster: boolean) => void;
   onChange: (verify: VerifySpec, frames: FrameSpec[], presetId: string | null) => void;
   onBack: () => void;
   onNext: () => void;
 }
 
-export function TransactionStep({ account, verify, frames, paymasters, payer, onPayer, onChange, onBack, onNext }: Props) {
+export function TransactionStep({ account, verify, frames, paymaster, payer, onPayer, onChange, onBack, onNext }: Props) {
   const setVerify = (v: Partial<VerifySpec>) => onChange({ ...verify, ...v }, frames, null);
   const setFrames = (f: FrameSpec[]) => onChange(verify, f, null);
   const patch = (id: number, p: Partial<FrameSpec>) => setFrames(frames.map((f) => (f.id === id ? { ...f, ...p } : f)));
@@ -44,7 +46,7 @@ export function TransactionStep({ account, verify, frames, paymasters, payer, on
           {!canSelfPay && <CardDescription>This account cannot pay gas, so a paymaster has to.</CardDescription>}
         </CardHeader>
         <CardPanel>
-          <RadioGroup value={payer?.address ?? "self"} onValueChange={(v) => onPayer(v === "self" ? null : String(v))} className="gap-3">
+          <RadioGroup value={payer ? "paymaster" : "self"} onValueChange={(v) => onPayer(v === "paymaster")} className="gap-3">
             <Label className="flex items-start gap-3 font-normal">
               <Radio value="self" disabled={!canSelfPay} />
               <span>
@@ -52,19 +54,16 @@ export function TransactionStep({ account, verify, frames, paymasters, payer, on
                 <span className="block text-sm text-muted-foreground">{account.signer === "pq" ? "One post-quantum signature." : "One wallet signature."}</span>
               </span>
             </Label>
-            {paymasters.map((p) => (
-              <Label key={p.address} className="flex items-start gap-3 font-normal">
-                <Radio value={p.address} />
-                <span>
-                  <span className="block font-medium">
-                    Paymaster <span className="font-mono text-sm">{short(p.address)}</span>
-                  </span>
-                  <span className="block text-sm text-muted-foreground">{ethStr(p.balance)} ETH. Pays for anything.</span>
+            <Label className="flex items-start gap-3 font-normal">
+              <Radio value="paymaster" disabled={!paymaster} />
+              <span>
+                <span className="block font-medium">
+                  The paymaster{paymaster && <span className="ms-2 font-mono text-sm font-normal text-muted-foreground"><CopyAddress address={paymaster.address} /></span>}
                 </span>
-              </Label>
-            ))}
+                <span className="block text-sm text-muted-foreground">{paymaster ? `${ethStr(paymaster.balance)} ETH. Pays for anything.${paymaster.low ? " Running low." : ""}` : "Not ready yet."}</span>
+              </span>
+            </Label>
           </RadioGroup>
-          {paymasters.length === 0 && !canSelfPay && <p className="mt-3 text-sm text-warning-foreground">Create a paymaster in the Account step first.</p>}
         </CardPanel>
       </Card>
 

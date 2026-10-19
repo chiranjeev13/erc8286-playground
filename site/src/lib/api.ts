@@ -35,8 +35,17 @@ export const SIGNER_HINT: Record<Signer, string> = {
   pq: "SphincsFrameValidator: SPHINCS (sphincs-g, keccak256 only) over the same EIP-712 digest, 6,176-byte signature, about 389k gas in the VERIFY frame. Verifier: RivaLabs sphincs-g.",
 };
 
+/** What creates a clone account: enough for the factory, or for a deploy frame. */
+export interface CloneSpec {
+  implementation: string;
+  args: string;
+  salt: string;
+}
+
 export interface Account {
   address: string;
+  /** Kept by the browser; sent back with requests about an undeployed account. */
+  clone: CloneSpec | null;
   balance: string;
   nonce: number;
   signer: Signer;
@@ -52,10 +61,12 @@ export interface Account {
   modes: Record<ModeName, boolean>;
 }
 
-/** An open paymaster: pays for whatever reaches it. Shared by everyone in the playground. */
+/** The common paymaster: pays for whatever reaches it. Provisioned and refilled by the server. */
 export interface Paymaster {
   address: string;
   balance: string;
+  /** Needs a top-up at the faucet. */
+  low: boolean;
 }
 
 export interface Prepared {
@@ -94,7 +105,7 @@ export interface Info {
   validator: string;
   pqValidator: string | null;
   factory: string;
-  deployer: string;
+  paymaster: string;
   head: string;
 }
 
@@ -222,6 +233,7 @@ export function expectation(a: Account, v: VerifySpec, frames: FrameSpec[], paye
     if (v.scope !== 2) return { tone: "error", text: "With a paymaster the account should approve execution only. If it also approves paying, it becomes the payer itself and the paymaster's step fails." };
     if ((a.scopes & 2) === 0) return { tone: "error", text: "This account is not allowed to approve execution, so nothing can run." };
   } else {
+    if (BigInt(a.balance) === 0n) return { tone: "error", text: "This account holds nothing, so it cannot pay for the transaction. Send it test ETH from the faucet, or let the paymaster pay." };
     if (v.scope !== 3) return { tone: "error", text: "Without a paymaster the account has to approve both paying and executing. Pick a paymaster, or set the approval to both." };
     if ((a.scopes & 1) === 0) return { tone: "error", text: "This account is not allowed to pay gas. Pick a paymaster to pay for it." };
     if ((a.scopes & 2) === 0) return { tone: "error", text: "This account is not allowed to approve execution, so nothing can run." };

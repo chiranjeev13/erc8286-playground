@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardFooter, CardHeader, CardPanel, CardTitle } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { DORA, frameOutcomes, short, type Receipt, type SentFrame } from "@/lib/api";
+import { DORA, short, type Receipt, type SentFrame } from "@/lib/api";
 import { SignatureView, type SignatureInfo } from "@/components/SignatureView";
 import { FrameReplay } from "@/components/FrameReplay";
 
@@ -48,20 +48,9 @@ const TONE: Record<Run["status"], "info" | "success" | "warning" | "error"> = {
   refused: "error",
   error: "error",
 };
-const TITLE: Record<Run["status"], string> = {
-  signing: "Signing...",
-  simulating: "Checking with the node...",
-  submitted: "Submitted, waiting for a block...",
-  mined: "Done",
-  reverted: "Done, but a frame failed",
-  refused: "Refused by the network",
-  error: "Something went wrong",
-};
 
 export function ResultStep({ run, history, onAgain, onNewAccount }: Props) {
   const r = run.receipt;
-  const outcomes = frameOutcomes(run.sentFrames, r?.frameReceipts ?? []);
-  const rolledBack = outcomes.some((o) => o === "rolled");
   const stages = [
     { name: run.pq ? "Post-quantum signature" : "Wallet signature", state: run.status === "signing" ? "busy" : run.status === "error" ? "bad" : "ok" },
     { name: "Node simulation", state: run.status === "signing" ? "wait" : run.status === "simulating" ? "busy" : run.status === "refused" || run.status === "error" ? "bad" : "ok" },
@@ -71,19 +60,6 @@ export function ResultStep({ run, history, onAgain, onNewAccount }: Props) {
 
   return (
     <div className="flex flex-col gap-6">
-      <Alert variant={TONE[run.status]}>
-        <AlertTitle>{TITLE[run.status]}</AlertTitle>
-        <AlertDescription>
-          {run.status === "refused" && <>Nothing happened and nobody paid. Reason: <span className="font-mono">{run.message}</span></>}
-          {run.status === "submitted" && <>Accepted into the mempool.</>}
-          {run.status === "mined" && r && <>Block {Number(r.blockNumber).toLocaleString("en-US")} - payer {short(r.payer ?? "")} - {Number(r.gasUsed).toLocaleString("en-US")} gas</>}
-          {run.status === "reverted" && (rolledBack ? <>Gas was still paid. A frame failed inside an atomic group, so the whole group was undone, including frames that had completed.</> : <>Gas was still paid: a failed frame rolls back on its own, the rest of the transaction stands.</>)}
-          {run.status === "error" && run.message}
-          {run.status === "signing" && (run.pq ? "Your post-quantum key is signing in this browser: a few thousand hashes, no wallet involved." : "Your wallet shows what you are approving: the account, its nonce and every call.")}
-          {run.status === "simulating" && "The node runs the approval steps before accepting the transaction."}
-        </AlertDescription>
-      </Alert>
-
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
@@ -102,6 +78,12 @@ export function ResultStep({ run, history, onAgain, onNewAccount }: Props) {
                 </li>
               ))}
             </ol>
+            {(run.status === "refused" || run.status === "error") && (
+              <Alert variant="error" className="mt-4">
+                <AlertTitle>{run.status === "refused" ? "Refused by the network" : "Something went wrong"}</AlertTitle>
+                <AlertDescription>{run.status === "refused" ? <>Nothing happened and nobody paid. Reason: <span className="font-mono">{run.message}</span></> : run.message}</AlertDescription>
+              </Alert>
+            )}
             {run.hash && (
               <Button variant="link" className="mt-4 px-0" render={<a href={`${DORA}/tx/${run.hash}`} target="_blank" rel="noreferrer" />}>
                 {short(run.hash)} <ExternalLink />

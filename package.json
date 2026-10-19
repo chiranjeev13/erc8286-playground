@@ -5,7 +5,8 @@
   "description": "ERC-8286 modular frame account reference",
   "license": "CC0-1.0",
   "dependencies": {
-    "@openzeppelin/contracts": "^5.6.1"
+    "@openzeppelin/contracts": "^5.6.1",
+    "viem": "^2.55.19"
   },
   "scripts": {
     "compile": "hardhat compile",
@@ -31,8 +32,7 @@
   "devDependencies": {
     "@types/node": "^26.2.0",
     "hardhat": "^3.14.0",
-    "typescript": "^7.0.2",
-    "viem": "^2.55.19"
+    "typescript": "^7.0.2"
   },
   "type": "module"
 }

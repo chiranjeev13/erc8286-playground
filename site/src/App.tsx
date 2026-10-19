@@ -7,6 +7,7 @@ import { ToastProvider, toastManager } from "@/components/ui/toast";
 import { api, execute, frameLabel, short, toWei, transfer, DEAD, DORA, FAUCET, SCOPE_WORD, type Account, type FrameSpec, type Info, type Paymaster, type Prepared, type Receipt, type SentFrame, type Sim, type VerifySpec, PRESETS } from "@/lib/api";
 import { connectWallet, describeError, hasWallet, onAccountsChanged, signTypedData } from "@/lib/wallet";
 import { findPqKey, onPqKeysChanged, pqKeys, pqSign } from "@/lib/pq";
+import { accountQuery, onStoredAccountsChanged, rememberAccount, storedAccounts } from "@/lib/accounts";
 import { CopyAddress } from "@/components/CopyAddress";
 import { Mascot } from "@/components/Mascot";
 import { SettingsSheet } from "@/components/SettingsSheet";
@@ -31,17 +32,18 @@ export function App() {
   const [connecting, setConnecting] = useState(false);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [active, setActive] = useState<string | null>(null);
-  const [paymasters, setPaymasters] = useState<Paymaster[]>([]);
-  const [payerAddr, setPayerAddr] = useState<string | null>(null);
+  const [paymaster, setPaymaster] = useState<Paymaster | null>(null);
+  const [usePaymaster, setUsePaymaster] = useState(false);
   const [verify, setVerify] = useState<VerifySpec>(PRESETS[0]!.verify);
   const [frames, setFrames] = useState<FrameSpec[]>(() => PRESETS[0]!.frames());
   const [presetId, setPresetId] = useState<string | null>("transfer");
   const [runs, setRuns] = useState<Run[]>([]);
   const [sending, setSending] = useState(false);
   const keys = useSyncExternalStore(onPqKeysChanged, pqKeys);
+  const stored = useSyncExternalStore(onStoredAccountsChanged, storedAccounts);
 
   const account = accounts.find((a) => a.address === active) ?? null;
-  const payer = paymasters.find((p) => p.address === payerAddr) ?? null;
+  const payer = usePaymaster ? paymaster : null;
   const current = runs[0] ?? null;
   /** Who can sign for the selected account here: the connected wallet, a post-quantum key in
    * this browser, or nobody present. */
@@ -55,6 +57,7 @@ export function App() {
     void (async () => {
       try {
         setInfo(await api<Info>("/api/pg/info"));
+        setPaymaster(await api<Paymaster>("/api/pg/paymaster"));
       } catch (e) {
         toastManager.add({ type: "error", title: "Playground server", description: e instanceof Error ? e.message : String(e) });
       }
@@ -62,25 +65,21 @@ export function App() {
     onAccountsChanged(setWallet);
   }, []);
 
-  // The accounts deployed before for this wallet and for the post-quantum keys in this
-  // browser, from the server's record.
-  const owners = [wallet, ...keys.map((k) => k.pkRoot)].filter((x): x is string => x !== null).join(",");
+  // The accounts this browser created, from its own list; the server reads each one's live
+  // state and keeps no record of its own.
+  const storedKey = stored.map((s) => s.address).join(",");
   useEffect(() => {
-    if (!owners) return;
+    if (!storedKey) return;
     void (async () => {
-      try {
-        const [{ accounts: mine }, pms] = await Promise.all([
-          api<{ accounts: Account[] }>(`/api/pg/accounts?owner=${owners}`),
-          api<{ paymasters: Paymaster[] }>("/api/pg/paymasters").then((r) => r.paymasters),
-        ]);
-        setAccounts((xs) => [...mine, ...xs.filter((x) => !mine.some((m) => m.address === x.address))]);
-        setActive((a) => a ?? mine.find((m) => !m.stale)?.address ?? null);
-        setPaymasters(pms);
-      } catch (e) {
-        toastManager.add({ type: "error", title: "Accounts", description: describeError(e) });
-      }
+      const results = await Promise.allSettled(stored.map((s) => api<Account>(`/api/pg/account?${accountQuery(s.address, s.clone)}`)));
+      const mine = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+      const failed = results.filter((r) => r.status === "rejected").length;
+      setAccounts((xs) => [...mine, ...xs.filter((x) => !mine.some((m) => m.address === x.address))]);
+      setActive((a) => a ?? mine.find((m) => !m.stale)?.address ?? null);
+      if (failed) toastManager.add({ type: "error", title: "Accounts", description: `${failed} stored account${failed > 1 ? "s" : ""} could not be read.` });
     })();
-  }, [wallet, owners]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storedKey]);
 
   const connect = async () => {
     setConnecting(true);
@@ -94,19 +93,16 @@ export function App() {
   };
 
   const refreshAccount = async (address: string) => {
-    const a = await api<Account>(`/api/pg/account?address=${address}`);
+    const clone = stored.find((s) => s.address === address)?.clone ?? accounts.find((x) => x.address === address)?.clone;
+    const a = await api<Account>(`/api/pg/account?${accountQuery(address, clone)}`);
     setAccounts((xs) => xs.map((x) => (x.address === address ? a : x)));
   };
 
   const onDeployed = (a: Account) => {
-    setAccounts((xs) => [a, ...xs]);
+    if (a.clone) rememberAccount({ address: a.address, signer: a.signer, owner: a.owner, clone: a.clone });
+    setAccounts((xs) => [a, ...xs.filter((x) => x.address !== a.address)]);
     setActive(a.address);
-    toastManager.add({ type: "success", title: "Account address reserved", description: `${short(a.address)} owned by ${a.signer === "pq" ? "post-quantum key" : "wallet"} ${short(a.owner)}. Its first transaction will create it.` });
-  };
-
-  const onPaymasterDeployed = (p: Paymaster) => {
-    setPaymasters((xs) => [p, ...xs]);
-    toastManager.add({ type: "success", title: "Paymaster deployed", description: `${short(p.address)} pays for anything that reaches it.` });
+    toastManager.add({ type: "success", title: "Account address reserved", description: `${short(a.address)} owned by ${a.signer === "pq" ? "post-quantum key" : "wallet"} ${short(a.owner)}. Fund it at the faucet, or let the paymaster pay its first transaction.` });
   };
 
   const patchRun = (id: number, patch: Partial<Run>) => setRuns((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -153,7 +149,7 @@ export function App() {
     setStep("result");
     setSending(true);
     try {
-      const prep = await api<Prepared>("/api/pg/prepare", { account: account.address, frames: wire });
+      const prep = await api<Prepared>("/api/pg/prepare", { account: account.address, frames: wire, clone: account.clone });
       // A wallet signs the typed data; a post-quantum key signs its hash, right here in the browser.
       const t0 = performance.now();
       const signature = signer === "pq" ? await pqSign(findPqKey(account.owner)!, prep.digest) : await signTypedData(wallet!, prep.typedData);
@@ -165,6 +161,7 @@ export function App() {
         frames: wire,
         signature,
         nonce: prep.nonce,
+        clone: account.clone,
         payer: payer?.address ?? null,
       });
       if (!out.sim.valid || !out.hash) {
@@ -238,8 +235,7 @@ export function App() {
             </a>
             <SettingsSheet
               account={account}
-              paymasters={paymasters}
-              onPaymasterDeployed={onPaymasterDeployed}
+              paymaster={paymaster}
               onSettings={(f) => {
                 setFrames(f);
                 setPresetId(null);
@@ -282,10 +278,10 @@ export function App() {
               verify={verify}
               frames={frames}
               presetId={presetId}
-              paymasters={paymasters}
+              paymaster={paymaster}
               payer={payer}
               onPayer={(p) => {
-                setPayerAddr(p);
+                setUsePaymaster(p);
                 // A sponsored account approves execution only; a self-paying one needs both.
                 setVerify((x) => ({ ...x, scope: p ? 2 : 3 }));
               }}

@@ -9,20 +9,18 @@ import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetDescription, SheetHeader, SheetPanel, SheetPopup, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { api, ethStr, settingsFrames, MODES, ROUTE_HINT, ROUTE_WORD, type Account, type FrameSpec, type ModeName, type Paymaster } from "@/lib/api";
+import { ethStr, settingsFrames, FAUCET, MODES, ROUTE_HINT, ROUTE_WORD, type Account, type FrameSpec, type ModeName, type Paymaster } from "@/lib/api";
 
 interface Props {
   /** The selected account, whose on-chain settings can be changed here. */
   account: Account | null;
   /** Frames that change the account's settings; the caller sends them. */
   onSettings: (frames: FrameSpec[]) => void;
-  paymasters: Paymaster[];
-  onPaymasterDeployed: (p: Paymaster) => void;
+  paymaster: Paymaster | null;
 }
 
 /** The settings button in the header, opening a side panel with the account's settings and the paymasters. */
-export function SettingsSheet({ account, onSettings, paymasters, onPaymasterDeployed }: Props) {
+export function SettingsSheet({ account, onSettings, paymaster }: Props) {
   const [open, setOpen] = useState(false);
   return (
     <Sheet open={open} onOpenChange={setOpen}>
@@ -32,7 +30,7 @@ export function SettingsSheet({ account, onSettings, paymasters, onPaymasterDepl
       <SheetPopup side="right" className="sm:max-w-lg">
         <SheetHeader>
           <SheetTitle>Settings</SheetTitle>
-          <SheetDescription>The selected account, and the paymasters.</SheetDescription>
+          <SheetDescription>The selected account, and the paymaster.</SheetDescription>
         </SheetHeader>
         <SheetPanel className="flex flex-col gap-8">
           {account ? (
@@ -48,7 +46,7 @@ export function SettingsSheet({ account, onSettings, paymasters, onPaymasterDepl
             <p className="text-sm text-muted-foreground">Select an account to change its settings.</p>
           )}
           <Separator />
-          <Paymasters paymasters={paymasters} onDeployed={onPaymasterDeployed} />
+          <Paymasters paymaster={paymaster} />
         </SheetPanel>
       </SheetPopup>
     </Sheet>
@@ -113,59 +111,36 @@ function AccountSettings({ account, onSettings }: { account: Account; onSettings
   );
 }
 
-function Paymasters({ paymasters, onDeployed }: { paymasters: Paymaster[]; onDeployed: (p: Paymaster) => void }) {
-  const [deploying, setDeploying] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const deploy = async () => {
-    setDeploying(true);
-    setError(null);
-    try {
-      onDeployed(await api<Paymaster>("/api/pg/deploy-paymaster", {}));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setDeploying(false);
-    }
-  };
+function Paymasters({ paymaster }: { paymaster: Paymaster | null }) {
   return (
-    <section className="flex flex-col gap-4">
+    <section className="flex flex-col gap-3">
       <div>
-        <h3 className="font-medium">Paymasters</h3>
+        <h3 className="font-medium">Paymaster</h3>
         <p className="text-sm text-muted-foreground">
-          <Hint text="Paymaster: pays for any transaction whose pay frame reaches it, no signature, no policy. Starts with 0.05 test ETH. Shared by everyone here.">
-            Pay gas for anyone.
+          <Hint text="One common Paymaster. Its pay frame approves payment for whatever reaches it: no signature, no policy. Funded by people at the faucet.">
+            Shared by everyone; pays for anything.
           </Hint>
         </p>
       </div>
-      {paymasters.length === 0 ? (
-        <p className="text-sm text-muted-foreground">None yet.</p>
+      {paymaster ? (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between rounded-md border border-border px-3 py-2 text-sm">
+            <CopyAddress address={paymaster.address} />
+            <span className="tabular-nums">{ethStr(paymaster.balance)} ETH</span>
+          </div>
+          {paymaster.low && (
+            <p className="text-sm text-warning-foreground">
+              Running low. Copy its address and top it up at the{" "}
+              <a className="underline underline-offset-4" href={FAUCET} target="_blank" rel="noreferrer">
+                faucet
+              </a>
+              .
+            </p>
+          )}
+        </div>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Paymaster</TableHead>
-              <TableHead className="text-end">Balance</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {paymasters.map((p) => (
-              <TableRow key={p.address}>
-                <TableCell className="text-xs"><CopyAddress address={p.address} /></TableCell>
-                <TableCell className="text-end tabular-nums">{ethStr(p.balance)} ETH</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+        <p className="text-sm text-muted-foreground">Being set up...</p>
       )}
-      {error && (
-        <Alert variant="error">
-          <AlertTitle>Could not create the paymaster</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-      <Button variant="outline" className="self-start" onClick={() => void deploy()} loading={deploying}>
-        {deploying ? "Creating..." : "Create a paymaster"}
-      </Button>
     </section>
   );
 }

@@ -62,9 +62,10 @@ export function AccountStep({ accounts, active, wallet, keys, connecting, onConn
         <CardHeader>
           <CardTitle>Create an account</CardTitle>
           <CardDescription>
-            <Hint text="The address is CREATE2(factory, salt, clone code || config), known before any code exists and funded with 0.01 test ETH. The first transaction's deploy frame calls factory.createAccount; the configuration lives in the clone's code, so creation writes no storage.">
+            <Hint text="The address is CREATE2(factory, salt, clone code || config), known before any code exists. The first transaction's deploy frame calls factory.createAccount; the configuration lives in the clone's code, so creation writes no storage.">
               Created by its first transaction.
-            </Hint>
+            </Hint>{" "}
+            Fund it at the faucet, or let the paymaster pay.
           </CardDescription>
         </CardHeader>
         <CardPanel className="flex flex-col gap-6">
@@ -163,7 +164,7 @@ export function AccountStep({ accounts, active, wallet, keys, connecting, onConn
         <CardHeader>
           <CardTitle>Your accounts</CardTitle>
           <CardDescription>
-            Top up at the{" "}
+            Copy an address and fund it at the{" "}
             <a className="underline underline-offset-4" href={FAUCET} target="_blank" rel="noreferrer">
               faucet
             </a>

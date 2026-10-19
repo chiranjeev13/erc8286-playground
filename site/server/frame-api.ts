@@ -1,12 +1,11 @@
 // Playground API, served by the Vite dev/preview server.
 //
-//   GET  /api/pg/info                  validator, deployer balance, head
-//   POST /api/pg/deploy                { route, scopes, modes, owner | pkSeed+pkRoot } -> a reserved, funded address; the first tx creates the account
+//   GET  /api/pg/info                  validators, factory, paymaster, head
+//   POST /api/pg/deploy                { route, scopes, modes, owner | pkSeed+pkRoot } -> a reserved address; the first tx creates the account
 //   GET  /api/pg/account?address=0x..  that account's live config, owner and balance
 //   GET  /api/pg/accounts?owner=a,b    every account this playground deployed for those owners
 //                                      (wallet addresses, or SPHINCS pkRoots for post-quantum accounts)
-//   POST /api/pg/deploy-paymaster     {} -> a Paymaster, funded; it pays for whatever reaches it
-//   GET  /api/pg/paymasters            every open paymaster this playground deployed; anyone may use any
+//   GET  /api/pg/paymaster             the common Paymaster (address, balance, low); pays for whatever reaches it
 //   POST /api/pg/prepare               { account, frames } -> typed data and digest for the owner
 //   POST /api/pg/send                  { account, verify, frames, signature, nonce, payer? } -> simulate, submit
 //   GET  /api/pg/receipt?hash=0x..     the type-0x06 receipt, or null
@@ -16,14 +15,13 @@
 // data from /prepare and passes the signature to /send; this server never signs for an account.
 // A Paymaster pays for an account that only approves execution; it checks nothing.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import type { Plugin } from "vite";
 import {
   bytesToHex,
   createPublicClient,
-  createWalletClient,
   defineChain,
   encodeAbiParameters,
   encodeFunctionData,
@@ -34,10 +32,8 @@ import {
   http,
   keccak256,
   parseEther,
-  type Abi,
   type Hex,
 } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import {
   Frame,
   FrameMode,
@@ -51,12 +47,8 @@ import { FRAME_MODES, type FrameModeName } from "../../scripts/lib/policy";
 
 const CHAIN_ID = 8141;
 const ATOMIC_FLAG = 0x04;
-const FUND = parseEther("0.01");
-// Explicit gas on the deployer's own transactions: ethrex's eth_estimateGas simulates with the
-// block gas limit (200M) and refuses once balance < 200M * gasPrice, long before funds run out.
-const DEPLOY_TX_GAS = 6_000_000n;
-const FUND_TX_GAS = 400_000n;
-const FUND_PAYMASTER = parseEther("0.05");
+/** Below this the paymaster is reported as running low; a person refills it at the faucet. */
+const PAYMASTER_LOW = parseEther("0.02");
 const MODE_BATCH = "0x0100000000000000000000000000000000000000000000000000000000000000" as const;
 /** ECDSAFrameValidator's ERC-7201 slot: the owner lives here, in the account's storage. */
 const OWNER_SLOT = "0x27aa2c0bccf1b67327dd8bf7c4c5cb600687106028be01b120c11c42f5ff9d00" as const;
@@ -106,42 +98,48 @@ const READ_ABI = [
   { type: "function", name: "isExecutionModeSupported", inputs: [{ type: "bytes32" }], outputs: [{ type: "bool" }], stateMutability: "view" },
 ] as const;
 
+// This server holds no key. It reads the chain, predicts addresses and relays signed frame
+// transactions; every deployment and all funding happens through the repo's scripts and the
+// faucet. Accounts and the paymaster are funded by people, not by the playground.
 interface Env {
   rpc: string;
-  key: Hex;
   validator: Hex;
   /** SphincsFrameValidator, when deployed. */
   pqValidator: Hex | null;
   pqVerifier: Hex | null;
   factory: Hex;
+  /** The common paymaster, deployed by scripts/deploy-factory.ts. */
+  paymaster: Hex;
   /** The clone implementation; the execution route is per account, in its configuration. */
   impl: Hex;
 }
 
+const ENV_KEYS = ["DEVNET_RPC", "ECDSAFRAMEVALIDATOR_ADDRESS", "SPHINCSFRAMEVALIDATOR_ADDRESS", "SPHINCSVERIFIER_ADDRESS", "ERC8286ACCOUNTFACTORY_ADDRESS", "ERC8286FRAMEACCOUNT_ADDRESS", "PAYMASTER_ADDRESS"] as const;
+
+/** Addresses from the network's env file when developing, from the environment when deployed
+ * (Vercel project settings); the environment wins. No key is read anywhere. */
 function loadEnv(): Env | null {
-  const path = process.env.FRAME_ENV ?? resolve(process.cwd(), "../.env.hegota-testnet");
-  if (!existsSync(path)) return null;
   const kv: Record<string, string> = {};
-  for (const line of readFileSync(path, "utf8").split("\n")) {
-    const t = line.trim();
-    if (!t || t.startsWith("#") || !t.includes("=")) continue;
-    kv[t.slice(0, t.indexOf("="))] = t.slice(t.indexOf("=") + 1);
+  const path = process.env.FRAME_ENV ?? resolve(process.cwd(), "../.env.hegota-testnet");
+  if (existsSync(path)) {
+    for (const line of readFileSync(path, "utf8").split("\n")) {
+      const t = line.trim();
+      if (!t || t.startsWith("#") || !t.includes("=")) continue;
+      kv[t.slice(0, t.indexOf("="))] = t.slice(t.indexOf("=") + 1);
+    }
   }
-  const need = ["DEVNET_PRIVATE_KEY", "ECDSAFRAMEVALIDATOR_ADDRESS", "ERC8286ACCOUNTFACTORY_ADDRESS", "ERC8286FRAMEACCOUNT_ADDRESS"];
+  for (const k of ENV_KEYS) if (process.env[k]) kv[k] = process.env[k]!;
+  const need = ["ECDSAFRAMEVALIDATOR_ADDRESS", "ERC8286ACCOUNTFACTORY_ADDRESS", "ERC8286FRAMEACCOUNT_ADDRESS", "PAYMASTER_ADDRESS"];
   if (need.some((k) => !kv[k])) return null;
   return {
     rpc: kv.DEVNET_RPC ?? "https://rpc1.privacy.ethrex.xyz",
-    key: kv.DEVNET_PRIVATE_KEY as Hex,
     validator: getAddress(kv.ECDSAFRAMEVALIDATOR_ADDRESS!),
     pqValidator: kv.SPHINCSFRAMEVALIDATOR_ADDRESS ? getAddress(kv.SPHINCSFRAMEVALIDATOR_ADDRESS) : null,
     pqVerifier: kv.SPHINCSVERIFIER_ADDRESS ? getAddress(kv.SPHINCSVERIFIER_ADDRESS) : null,
     factory: getAddress(kv.ERC8286ACCOUNTFACTORY_ADDRESS!),
+    paymaster: getAddress(kv.PAYMASTER_ADDRESS!),
     impl: getAddress(kv.ERC8286FRAMEACCOUNT_ADDRESS!),
   };
-}
-
-function artifact(name: string): { abi: Abi; bytecode: Hex } {
-  return JSON.parse(readFileSync(resolve(process.cwd(), `../artifacts/src/${name}.sol/${name}.json`), "utf8"));
 }
 
 function clients(env: Env) {
@@ -151,12 +149,7 @@ function clients(env: Env) {
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     rpcUrls: { default: { http: [env.rpc] } },
   });
-  const account = privateKeyToAccount(env.key);
-  return {
-    deployer: account,
-    pub: createPublicClient({ chain, transport: http(env.rpc) }),
-    wallet: createWalletClient({ chain, account, transport: http(env.rpc) }),
-  };
+  return { pub: createPublicClient({ chain, transport: http(env.rpc) }) };
 }
 
 async function rpc<T>(url: string, method: string, params: unknown[]): Promise<T> {
@@ -186,11 +179,6 @@ function value(v: unknown): bigint {
   // No cap: a transfer the account cannot afford is a failed frame, which is worth seeing.
   if (n < 0n) throw new Error("value out of range");
   return n;
-}
-/** An owner key in the record: a wallet address, or a SPHINCS pkRoot (bytes32). */
-function ownerKey(v: unknown): string {
-  if (typeof v === "string" && /^0x[0-9a-fA-F]{64}$/.test(v)) return v.toLowerCase();
-  return address(v, "owner");
 }
 function word(v: unknown, what: string): Hex {
   if (typeof v !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(v)) throw new Error(`${what} must be 32 bytes`);
@@ -224,9 +212,11 @@ function parseFrames(v: unknown): FrameIn[] {
   });
 }
 
-// ---------------------------------------------------------------- deployed accounts
+// ---------------------------------------------------------------- accounts
 
-const ACCOUNTS_FILE = resolve(process.cwd(), "../.playground-accounts.json");
+// The server keeps no record. The browser remembers the accounts it created, as an address
+// plus the clone spec that produces it, and sends the spec back with each request; the server
+// checks that the spec really predicts the address before trusting anything in it.
 
 /** How a clone is (or will be) created: enough to deploy it, or to deploy it inside its first transaction. */
 interface CloneSpec {
@@ -234,48 +224,30 @@ interface CloneSpec {
   args: Hex;
   salt: Hex;
 }
-interface AccountRecord {
-  /** A wallet address, or the pkRoot of a post-quantum key. */
-  owner: string;
-  /** Absent for accounts deployed with their constructor (earlier playground versions). */
-  clone?: CloneSpec;
+
+function parseClone(v: unknown): CloneSpec | null {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  const hex = (x: unknown, what: string) => {
+    if (typeof x !== "string" || !/^0x[0-9a-fA-F]*$/.test(x)) throw new Error(`clone ${what} must be hex`);
+    return x as Hex;
+  };
+  return { implementation: address(o.implementation, "clone implementation"), args: hex(o.args, "args"), salt: word(o.salt, "clone salt") };
 }
-interface Record_ {
-  accounts: Record<string, AccountRecord>;
-  /** paymaster -> "open" (earlier versions recorded a sponsor; those paymasters are ignored) */
-  paymasters: Record<string, string>;
-}
-function loadRecord(): Record_ {
-  try {
-    if (!existsSync(ACCOUNTS_FILE)) return { accounts: {}, paymasters: {} };
-    const raw = JSON.parse(readFileSync(ACCOUNTS_FILE, "utf8")) as Record<string, unknown>;
-    // The first version of the file was a bare account -> owner map; the second had string owners.
-    const accountsRaw = ("accounts" in raw ? raw.accounts : raw) as Record<string, string | AccountRecord>;
-    const accounts = Object.fromEntries(Object.entries(accountsRaw).map(([a, v]) => [a, typeof v === "string" ? { owner: v } : v]));
-    return { accounts, paymasters: ("accounts" in raw ? (raw.paymasters ?? {}) : {}) as Record<string, string> };
-  } catch {
-    return { accounts: {}, paymasters: {} };
-  }
-}
-const record = loadRecord();
-const ours = new Map<string, AccountRecord>(Object.entries(record.accounts));
-const paymasters = new Map<string, string>(Object.entries(record.paymasters));
-function save(): void {
-  writeFileSync(ACCOUNTS_FILE, JSON.stringify({ accounts: Object.fromEntries(ours), paymasters: Object.fromEntries(paymasters) }, null, 2) + "\n");
-}
-function remember(account: Hex, rec: AccountRecord): void {
-  ours.set(account, rec);
-  save();
-}
-function rememberPaymaster(paymaster: Hex, sponsor: string): void {
-  paymasters.set(paymaster, sponsor);
-  save();
+
+/** The spec is trusted only if the factory would put this clone at this address. */
+async function resolveClone(env: Env, account: Hex, clone: CloneSpec | null): Promise<CloneSpec | null> {
+  if (!clone) return null;
+  const { pub } = clients(env);
+  if (clone.implementation !== env.impl) throw new Error("clone spec names another implementation");
+  const predicted = getAddress(await pub.readContract({ address: env.factory, abi: FACTORY_ABI, functionName: "predict", args: [clone.implementation, clone.args, clone.salt] }));
+  if (predicted !== account) throw new Error("clone spec does not produce this address");
+  return clone;
 }
 
 // ---------------------------------------------------------------- chain reads
 
 const sending = new Map<string, Promise<unknown>>();
-let deploying: Promise<unknown> | null = null;
 
 /** The validator an account of this kind selects through nonce_keys[0]. */
 function validatorFor(env: Env, signer: Signer): Hex {
@@ -350,18 +322,22 @@ interface AccountView {
   stale: boolean;
   /** False for an account that will be created by its first transaction. */
   deployed: boolean;
+  /** What creates it; the browser keeps this and sends it back. */
+  clone: CloneSpec | null;
   scopes: number;
   route: number;
   modes: Record<string, boolean>;
 }
 
-async function readAccount(env: Env, addr: Hex): Promise<AccountView> {
+async function readAccount(env: Env, addr: Hex, clone: CloneSpec | null): Promise<AccountView> {
   const { pub } = clients(env);
-  const rec = ours.get(addr);
   const code = (await pub.getCode({ address: addr })) ?? "0x";
   const deployed = code.length > 2;
-  const argsHex = deployed ? configFromCode(code) : (rec?.clone?.args ?? null);
-  if (!argsHex) return readLegacyAccount(env, addr);
+  const argsHex = deployed ? configFromCode(code) : (clone?.args ?? null);
+  if (!argsHex) {
+    if (deployed) return readLegacyAccount(env, addr);
+    throw new Error("this address has no code and no clone spec was given");
+  }
   const cfg = parseConfig(argsHex);
   const who = ownerFromConfig(env, cfg);
   const signer: Signer = who.signer ?? "wallet";
@@ -378,6 +354,7 @@ async function readAccount(env: Env, addr: Hex): Promise<AccountView> {
     : [cfg.scopes, cfg.route, ...MODE_NAMES.map((n) => (cfg.modeBits & MODE_BIT[n]) !== 0)];
   return {
     address: addr,
+    clone,
     balance,
     nonce,
     signer,
@@ -418,6 +395,7 @@ async function readLegacyAccount(env: Env, addr: Hex): Promise<AccountView> {
     // this playground uses, so verify() would revert. Such accounts are shown but not usable.
     stale: installed === null,
     deployed: true,
+    clone: null,
     scopes: Number(scopes),
     route: Number(route),
     modes: Object.fromEntries(MODE_NAMES.map((n, i) => [n, modes[i] as boolean])),
@@ -433,7 +411,7 @@ async function deploy(env: Env, body: Record<string, unknown>) {
   const names = (Array.isArray(body.modes) ? body.modes : []).filter((m): m is FrameModeName => MODE_NAMES.includes(m as FrameModeName));
   if (names.length === 0) throw new Error("pick at least one frame shape");
 
-  const { pub, wallet } = clients(env);
+  const { pub } = clients(env);
   // The configuration goes into the clone's code: a post-quantum account names
   // SphincsFrameValidator and its packed public key, a wallet account names
   // ECDSAFrameValidator and the wallet address.
@@ -457,34 +435,19 @@ async function deploy(env: Env, body: Record<string, unknown>) {
   const addr = getAddress(await pub.readContract({ address: env.factory, abi: FACTORY_ABI, functionName: "predict", args: [implementation, args, salt] }));
   const clone: CloneSpec = { implementation, args, salt };
 
-  // Counterfactual only: the address is known and funded now; the code arrives with the
-  // account's first transaction, in its deploy frame.
-  const fund = await wallet.sendTransaction({ to: addr, value: FUND, gas: FUND_TX_GAS });
-  await pub.waitForTransactionReceipt({ hash: fund });
-  remember(addr, { owner, clone });
-  return await readAccount(env, addr);
+  // Counterfactual only: the address is known now and the code arrives with the account's
+  // first transaction, in its deploy frame. Funding is the person's: the faucet, or a
+  // paymaster-paid first transaction. The browser keeps `clone`; nothing is stored here.
+  return await readAccount(env, addr, clone);
 }
 
-const OPEN = "open";
-const openPaymasters = () => [...paymasters.entries()].filter(([, v]) => v === OPEN).map(([a]) => a as Hex);
+// ---------------------------------------------------------------- the common paymaster
 
-async function readPaymaster(env: Env, addr: Hex) {
+/** The one Paymaster everyone uses, deployed by the scripts. Refilled by a person at the faucet. */
+async function readPaymaster(env: Env) {
   const { pub } = clients(env);
-  return { address: addr, balance: await pub.getBalance({ address: addr }) };
-}
-
-/** Paymaster: pays for whatever reaches it. The deployer can take the balance back. */
-async function deployPaymaster(env: Env) {
-  const { pub, wallet, deployer } = clients(env);
-  const { abi, bytecode } = artifact("Paymaster");
-  const hash = await wallet.deployContract({ abi, bytecode, args: [deployer.address], gas: DEPLOY_TX_GAS });
-  const { contractAddress } = await pub.waitForTransactionReceipt({ hash });
-  if (!contractAddress) throw new Error("deployment mined without an address");
-  const fund = await wallet.sendTransaction({ to: contractAddress, value: FUND_PAYMASTER, gas: FUND_TX_GAS });
-  await pub.waitForTransactionReceipt({ hash: fund });
-  const addr = getAddress(contractAddress);
-  rememberPaymaster(addr, OPEN);
-  return { ...(await readPaymaster(env, addr)), deployTx: hash };
+  const balance = await pub.getBalance({ address: env.paymaster });
+  return { address: env.paymaster, balance, low: balance < PAYMASTER_LOW };
 }
 
 // ---------------------------------------------------------------- build and sign
@@ -531,8 +494,8 @@ async function prepare(env: Env, account: Hex, signer: Signer, frames: FrameIn[]
 }
 
 /** Refuses an account configured for a validator this playground does not sign for. */
-async function assertCurrent(env: Env, account: Hex): Promise<AccountView> {
-  const view = await readAccount(env, account);
+async function assertCurrent(env: Env, account: Hex, clone: CloneSpec | null): Promise<AccountView> {
+  const view = await readAccount(env, account, await resolveClone(env, account, clone));
   if (view.stale) throw new Error("this account was deployed with an earlier validator; deploy a new one");
   return view;
 }
@@ -549,10 +512,10 @@ function deployFrame(env: Env, clone: CloneSpec, signer: Signer): Frame {
   });
 }
 
-function parsePayer(v: unknown): Hex | null {
+async function parsePayer(env: Env, v: unknown): Promise<Hex | null> {
   if (v === undefined || v === null || v === "") return null;
   const addr = address(v, "paymaster address");
-  if (paymasters.get(addr) !== OPEN) throw new Error("not a playground paymaster");
+  if (addr !== env.paymaster) throw new Error("not the playground paymaster");
   return addr;
 }
 
@@ -564,20 +527,19 @@ function tampered(signature: Hex): Hex {
 
 async function send(env: Env, body: Record<string, unknown>) {
   const account = address(body.account, "account");
-  if (!ours.has(account)) throw new Error("not a playground account");
   const v = (body.verify ?? {}) as Record<string, unknown>;
   const scope = Number(v.scope);
   if (scope !== 1 && scope !== 2 && scope !== 3) throw new Error("scope must be 1, 2 or 3");
   const frames = parseFrames(body.frames);
-  const payer = parsePayer(body.payer);
+  const payer = await parsePayer(env, body.payer);
   // With a payer, the account approves execution only: APPROVE(0x3) would make it the payer
   // itself and the paymaster's APPROVE(0x1) would then revert.
   if (payer && scope !== 2) throw new Error("with a paymaster the account's allowed scope must be 0x2");
 
-  const view = await assertCurrent(env, account);
+  const view = await assertCurrent(env, account, parseClone(body.clone));
   const signer = view.signer;
   const { nonce } = await prepare(env, account, signer, frames);
-  const clone = ours.get(account)?.clone;
+  const clone = view.clone;
   if (!view.deployed && !clone) throw new Error("this account has no code and no way to get it");
 
   // The owner signed the message from /prepare over a nonce; if a block moved it since,
@@ -645,6 +607,9 @@ async function send(env: Env, body: Record<string, unknown>) {
 // ---------------------------------------------------------------- http
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const pre = (req as IncomingMessage & { body?: unknown }).body;
+  if (pre && typeof pre === "object") return pre as Record<string, unknown>;
+  if (typeof pre === "string") return pre ? (JSON.parse(pre) as Record<string, unknown>) : {};
   let data = "";
   for await (const chunk of req) {
     data += chunk;
@@ -676,39 +641,24 @@ async function handle(req: IncomingMessage, res: ServerResponse, next: () => voi
   const url = new URL(req.url ?? "/", "http://local");
   if (!url.pathname.startsWith("/api/pg/")) return next();
   const env = loadEnv();
-  if (!env) return reply(res, 503, { error: "Missing ../.env.hegota-testnet" });
+  if (!env) return reply(res, 503, { error: "Playground addresses are not configured (env file or environment)." });
 
   try {
     if (url.pathname === "/api/pg/info" && req.method === "GET") {
-      const { deployer, pub } = clients(env);
-      const [balance, head] = await Promise.all([pub.getBalance({ address: deployer.address }), pub.getBlockNumber()]);
-      return reply(res, 200, { chainId: CHAIN_ID, rpc: env.rpc, validator: env.validator, pqValidator: env.pqValidator, factory: env.factory, deployer: deployer.address, balance, head });
+      const { pub } = clients(env);
+      const head = await pub.getBlockNumber();
+      return reply(res, 200, { chainId: CHAIN_ID, rpc: env.rpc, validator: env.validator, pqValidator: env.pqValidator, factory: env.factory, paymaster: env.paymaster, head });
     }
 
     if (url.pathname === "/api/pg/account" && req.method === "GET") {
-      return reply(res, 200, await readAccount(env, address(url.searchParams.get("address"), "account")));
+      const account = address(url.searchParams.get("address"), "account");
+      const q = url.searchParams;
+      const clone = q.get("implementation") ? parseClone({ implementation: q.get("implementation"), args: q.get("args"), salt: q.get("salt") }) : null;
+      return reply(res, 200, await readAccount(env, account, await resolveClone(env, account, clone)));
     }
 
-    if (url.pathname === "/api/pg/accounts" && req.method === "GET") {
-      const owners = new Set((url.searchParams.get("owner") ?? "").split(",").filter(Boolean).map(ownerKey));
-      const mine = [...ours.entries()].filter(([, r]) => owners.has(r.owner.length === 66 ? r.owner.toLowerCase() : r.owner)).map(([a]) => a as Hex);
-      const results = await Promise.allSettled(mine.map((a) => readAccount(env, a)));
-      return reply(res, 200, { accounts: results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : [])).reverse() });
-    }
-
-    if (url.pathname === "/api/pg/paymasters" && req.method === "GET") {
-      const results = await Promise.allSettled(openPaymasters().map((a) => readPaymaster(env, a)));
-      return reply(res, 200, { paymasters: results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : [])).reverse() });
-    }
-
-    if (url.pathname === "/api/pg/deploy-paymaster" && req.method === "POST") {
-      if (deploying) return reply(res, 429, { error: "Another deployment is in progress." });
-      deploying = deployPaymaster(env);
-      try {
-        return reply(res, 200, await deploying);
-      } finally {
-        deploying = null;
-      }
+    if (url.pathname === "/api/pg/paymaster" && req.method === "GET") {
+      return reply(res, 200, await readPaymaster(env));
     }
 
     if (url.pathname === "/api/pg/receipt" && req.method === "GET") {
@@ -718,20 +668,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, next: () => voi
     }
 
     if (url.pathname === "/api/pg/deploy" && req.method === "POST") {
-      if (deploying) return reply(res, 429, { error: "Another account is being deployed." });
-      deploying = deploy(env, await readJson(req));
-      try {
-        return reply(res, 200, await deploying);
-      } finally {
-        deploying = null;
-      }
+      return reply(res, 200, await deploy(env, await readJson(req)));
     }
 
     if (url.pathname === "/api/pg/prepare" && req.method === "POST") {
       const body = await readJson(req);
       const account = address(body.account, "account");
-      if (!ours.has(account)) throw new Error("not a playground account");
-      const view = await assertCurrent(env, account);
+      const view = await assertCurrent(env, account, parseClone(body.clone));
       return reply(res, 200, await prepare(env, account, view.signer, parseFrames(body.frames)));
     }
 
@@ -757,6 +700,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, next: () => voi
     const lines = e instanceof Error ? e.message.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("Version:") && !l.startsWith("Docs:")) : [String(e)];
     return reply(res, 502, { error: [lines[0], lines.find((l) => l.startsWith("Details:"))].filter(Boolean).join(" ") });
   }
+}
+
+/** The same handler as a plain Node request handler, for a serverless function. */
+export function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  return handle(req, res, () => reply(res, 404, { error: "not found" }));
 }
 
 export function frameApi(): Plugin {

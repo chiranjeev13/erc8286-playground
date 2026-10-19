@@ -28,3 +28,7 @@ cache/
 
 # Accounts the playground deployed, keyed by owner wallet
 .playground-accounts.json
+
+# Vite build output and Vercel's local state
+dist/
+.vercel/

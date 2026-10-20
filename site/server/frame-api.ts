@@ -9,6 +9,7 @@
 //   POST /api/pg/prepare               { account, frames } -> typed data and digest for the owner
 //   POST /api/pg/send                  { account, verify, frames, signature, nonce, payer? } -> simulate, submit
 //   GET  /api/pg/receipt?hash=0x..     the type-0x06 receipt, or null
+//   GET  /api/pg/history?address=0x..  the account's transactions, newest first: blocks from the explorer, transactions from the node
 //
 // Accounts are ERC8286FrameAccount clones on ethrex's
 // Hegota testnet (chain 8141), each owned by a visitor's wallet. The browser signs the typed
@@ -21,6 +22,8 @@ import { resolve } from "node:path";
 import {
   bytesToHex,
   createPublicClient,
+  decodeAbiParameters,
+  decodeFunctionData,
   defineChain,
   encodeAbiParameters,
   encodeFunctionData,
@@ -31,6 +34,7 @@ import {
   http,
   keccak256,
   parseEther,
+  toHex,
   type Hex,
 } from "viem";
 import {
@@ -603,6 +607,129 @@ async function send(env: Env, body: Record<string, unknown>) {
   return { sim, nonce, signer, hash, account, payer, deploys: !view.deployed, gasLimits: tx.frames.map((f) => Number(f.gasLimit)) };
 }
 
+// ---------------------------------------------------------------- history
+
+const DORA = "https://dora.privacy.ethrex.xyz";
+
+interface NodeFrame {
+  mode: Hex;
+  flags: Hex;
+  to: Hex | null;
+  value: Hex;
+  data: Hex;
+}
+interface NodeTx {
+  hash: Hex;
+  from: Hex;
+  to: Hex | null;
+  value: Hex;
+  type: Hex;
+  frames?: NodeFrame[];
+}
+interface NodeReceipt {
+  status: Hex;
+  gasUsed: Hex;
+  effectiveGasPrice: Hex;
+  payer?: Hex;
+  frameReceipts?: { status: Hex }[];
+}
+
+/** One call a SENDER frame made: straight to its target, or unpacked from execute(). */
+interface HistoryCall {
+  to: Hex;
+  value: string;
+  /** A change to the account's own settings rather than a call out. */
+  settings: boolean;
+  ok: boolean;
+}
+export interface HistoryItem {
+  hash: Hex;
+  block: number;
+  time: number;
+  /** frame: a frame transaction the account sent. in/out: a plain transaction to or from it. */
+  kind: "frame" | "in" | "out";
+  status: "ok" | "partial" | "failed";
+  /** The other side of a plain transaction. */
+  counterparty: Hex | null;
+  /** Plain transactions: what moved. Frame transactions: the sum of their calls. */
+  value: string;
+  fee: string;
+  /** Who paid the gas when it was not the account. */
+  payer: Hex | null;
+  /** Carried a deploy frame: this transaction created the account. */
+  creates: boolean;
+  calls: HistoryCall[];
+}
+
+/**
+ * Blocks with transactions to or from the address, newest first, from the explorer's address
+ * page (it has no JSON API for this). The explorer indexes frame transactions by sender but
+ * hashes them differently from the node, so only its block numbers are used; the transactions
+ * themselves are read from the node.
+ */
+async function historyBlocks(account: Hex, limit: number): Promise<number[]> {
+  const res = await fetch(`${DORA}/address/${account}?v=transactions&c=${limit}`);
+  if (!res.ok) throw new Error(`Explorer answered HTTP ${res.status}`);
+  const html = await res.text();
+  const body = html.slice(html.indexOf("<tbody>"), html.indexOf("</tbody>"));
+  const blocks = [...body.matchAll(/href="\/slot\/0x[0-9a-fA-F]+">(.*?)<\/a>/g)].map((m) => Number(m[1]!.replace(/<[^>]+>|\D/g, "")));
+  return [...new Set(blocks)].filter((n) => n > 0);
+}
+
+/** The calls in one SENDER frame. A frame to the account itself is execute() or a setter. */
+function framesCalls(account: Hex, f: NodeFrame, ok: boolean): HistoryCall[] {
+  const to = getAddress(f.to ?? account);
+  if (to !== account) return [{ to, value: BigInt(f.value).toString(), settings: false, ok }];
+  try {
+    const { args } = decodeFunctionData({ abi: EXECUTE_ABI, data: f.data });
+    const [batch] = decodeAbiParameters(EXECUTIONS, args[1]);
+    return batch.map((c) => ({ to: getAddress(c.target), value: c.value.toString(), settings: false, ok }));
+  } catch {
+    return [{ to, value: BigInt(f.value).toString(), settings: true, ok }];
+  }
+}
+
+async function history(env: Env, account: Hex, limit: number): Promise<HistoryItem[]> {
+  const me = account.toLowerCase();
+  const blocks = await historyBlocks(account, limit);
+  const perBlock = await Promise.all(
+    blocks.map(async (n) => {
+      const b = await rpc<{ timestamp: Hex; transactions: NodeTx[] } | null>(env.rpc, "eth_getBlockByNumber", [toHex(n), true]);
+      const mine = (b?.transactions ?? []).filter((t) => t.from.toLowerCase() === me || t.to?.toLowerCase() === me);
+      return Promise.all(
+        mine.map(async (t): Promise<HistoryItem> => {
+          const r = await rpc<NodeReceipt>(env.rpc, "eth_getTransactionReceipt", [t.hash]);
+          const frames = t.frames ?? [];
+          // A frame that ran and was then undone with its atomic group still reads 0x1.
+          const ok = frames.map((_, i) => r.frameReceipts?.[i]?.status === "0x1");
+          for (let start = 0, i = 0; i < frames.length; i++) {
+            if (Number(frames[i]!.flags) & ATOMIC_FLAG && i + 1 < frames.length) continue;
+            if (ok.slice(start, i + 1).includes(false)) ok.fill(false, start, i + 1);
+            start = i + 1;
+          }
+          const calls = frames.flatMap((f, i) => (Number(f.mode) === FrameMode.SENDER ? framesCalls(account, f, ok[i]!) : []));
+          const outgoing = t.from.toLowerCase() === me;
+          const frame = outgoing && t.type === "0x6";
+          return {
+            hash: t.hash,
+            block: n,
+            time: Number(b!.timestamp),
+            kind: frame ? "frame" : outgoing ? "out" : "in",
+            status: !frame || calls.length === 0 ? (r.status === "0x1" ? "ok" : "failed") : calls.every((c) => c.ok) ? "ok" : calls.some((c) => c.ok) ? "partial" : "failed",
+            counterparty: frame ? null : outgoing ? (t.to ? getAddress(t.to) : null) : getAddress(t.from),
+            value: frame ? calls.reduce((v, c) => v + BigInt(c.value), 0n).toString() : BigInt(t.value).toString(),
+            fee: (BigInt(r.gasUsed) * BigInt(r.effectiveGasPrice)).toString(),
+            payer: r.payer && r.payer.toLowerCase() !== me ? getAddress(r.payer) : null,
+            creates: frames.some((f) => Number(f.mode) === FrameMode.DEFAULT && f.to?.toLowerCase() === env.factory.toLowerCase()),
+            calls,
+          };
+        }),
+      );
+    }),
+  );
+  return perBlock.flat().sort((a, b) => b.block - a.block);
+}
+
 // ---------------------------------------------------------------- http
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -664,6 +791,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse, next: ()
       const hash = url.searchParams.get("hash") ?? "";
       if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) return reply(res, 400, { error: "bad hash" });
       return reply(res, 200, { receipt: await rpc<unknown>(env.rpc, "eth_getTransactionReceipt", [hash]) });
+    }
+
+    if (url.pathname === "/api/pg/history" && req.method === "GET") {
+      const account = address(url.searchParams.get("address"), "account");
+      return reply(res, 200, { items: await history(env, account, 50) });
     }
 
     if (url.pathname === "/api/pg/deploy" && req.method === "POST") {

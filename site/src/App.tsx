@@ -214,7 +214,7 @@ export function App() {
               <CopyAddress address={account.address} />
             </Badge>
           )}
-          <Badge variant={info ? "success" : "secondary"}>{info ? `Hegota - block ${Number(info.head).toLocaleString("en-US")}` : "connecting..."}</Badge>
+          <Badge variant={info ? "success" : "secondary"}>{info ? `Hegota (chain ${info.chainId}) - block ${Number(info.head).toLocaleString("en-US")}` : "connecting..."}</Badge>
           <div className="ms-auto flex items-center gap-3">
             {wallet ? (
               <Badge variant="info">
@@ -231,8 +231,11 @@ export function App() {
             <a className="text-sm text-muted-foreground underline-offset-4 hover:underline" href={DORA} target="_blank" rel="noreferrer">
               Explorer
             </a>
-            <a className="text-sm text-muted-foreground underline-offset-4 hover:underline" href="https://eips.ethereum.org/EIPS/eip-8286" target="_blank" rel="noreferrer">
-              Spec
+            <a className="text-sm text-muted-foreground underline-offset-4 hover:underline" href="https://eips.ethereum.org/EIPS/eip-8286" target="_blank" rel="noreferrer" title="ERC-8286: Modular Accounts for Frame Transactions">
+              ERC-8286
+            </a>
+            <a className="text-sm text-muted-foreground underline-offset-4 hover:underline" href="https://eips.ethereum.org/EIPS/eip-8141" target="_blank" rel="noreferrer" title="EIP-8141: Frame Transactions">
+              EIP-8141
             </a>
             <SettingsSheet
               account={account}

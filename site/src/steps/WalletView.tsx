@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ArrowUpRight, Droplet, KeyRound, Plus, RefreshCw, Send, Settings, Wallet } from "lucide-react";
+import { Activity } from "@/components/Activity";
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { CopyAddress } from "@/components/CopyAddress";
 import { Hint } from "@/components/Hint";
@@ -11,7 +12,7 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { Skeleton } from "@/components/ui/skeleton";
 import { DORA, ethStr, short, FAUCET, MODES, MODE_HINT, MODE_WORD, ROUTE_HINT, ROUTE_WORD, SIGNER_HINT, SIGNER_WORD, type Account } from "@/lib/api";
 import type { PqKey } from "@/lib/pq";
-import { TONE, type Run } from "@/steps/ResultStep";
+import type { Run } from "@/steps/ResultStep";
 
 interface Props {
   accounts: Account[];
@@ -50,7 +51,11 @@ export function WalletView({ accounts, active, loading, runs, keys, onSelect, on
                   </EmptyMedia>
                   <EmptyTitle>No accounts yet</EmptyTitle>
                   <EmptyDescription>
-                    An ERC-8286 account is a smart account that sends frame transactions. Create one in three short steps: pick who signs for it, how its calls run, and what it may do.
+                    An ERC-8286 account is a modular smart account that sends{" "}
+                    <a className="underline underline-offset-4" href="https://eips.ethereum.org/EIPS/eip-8141" target="_blank" rel="noreferrer">
+                      EIP-8141
+                    </a>{" "}
+                    frame transactions: the account approves each one itself, in a VERIFY frame, with no outer signature. Create one in three choices: who signs for it, how its calls run, and what it may do.
                   </EmptyDescription>
                 </EmptyHeader>
                 <EmptyContent>
@@ -68,7 +73,6 @@ export function WalletView({ accounts, active, loading, runs, keys, onSelect, on
   }
 
   const total = accounts.reduce((n, a) => n + BigInt(a.balance), 0n);
-  const mine = account ? runs.filter((r) => r.account === account.address) : [];
 
   return (
     <div className="flex flex-col gap-6">
@@ -119,73 +123,41 @@ export function WalletView({ accounts, active, loading, runs, keys, onSelect, on
               <Action icon={<ArrowUpRight className="size-5" />} label="Explorer" href={`${DORA}/address/${account.address}`} />
             </div>
 
-            <div className="grid gap-6 xl:grid-cols-2">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Details</CardTitle>
-                  <CardDescription>Read from the chain, or from the clone code until it exists.</CardDescription>
-                </CardHeader>
-                <CardPanel>
-                  <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-3 text-sm">
-                    <dt className="text-muted-foreground">Owner</dt>
-                    <dd className="flex flex-wrap items-center gap-2">
-                      <Hint text={SIGNER_HINT[account.signer]}>{SIGNER_WORD[account.signer]}</Hint>
-                      <CopyAddress address={account.owner} className="text-xs text-muted-foreground" />
-                    </dd>
-                    <dt className="text-muted-foreground">Calls</dt>
-                    <dd><Hint text={ROUTE_HINT(account.route)}>{ROUTE_WORD(account.route)}</Hint></dd>
-                    <dt className="text-muted-foreground">May approve</dt>
-                    <dd className="flex flex-wrap gap-1.5">
-                      <Badge variant={account.scopes & 1 ? "success" : "outline"} className={account.scopes & 1 ? "" : "line-through opacity-60"}>Pay gas</Badge>
-                      <Badge variant={account.scopes & 2 ? "success" : "outline"} className={account.scopes & 2 ? "" : "line-through opacity-60"}>Execute calls</Badge>
-                    </dd>
-                    <dt className="text-muted-foreground">Shapes</dt>
-                    <dd className="flex flex-wrap gap-1.5">
-                      {MODES.map((m) => (
-                        <Hint key={m} text={MODE_HINT[m]}>
-                          <Badge variant={account.modes[m] ? "secondary" : "outline"} className={account.modes[m] ? "" : "line-through opacity-60"}>{MODE_WORD[m]}</Badge>
-                        </Hint>
-                      ))}
-                    </dd>
-                    <dt className="text-muted-foreground">Sent</dt>
-                    <dd className="tabular-nums">{account.nonce} transaction{account.nonce === 1 ? "" : "s"}</dd>
-                  </dl>
-                </CardPanel>
-              </Card>
+            <Activity account={account} runs={runs} onOpenRun={onOpenRun} />
 
-              <Card>
-                <CardHeader>
-                  <CardTitle>Activity</CardTitle>
-                  <CardDescription>Sent from this browser, this session.</CardDescription>
-                </CardHeader>
-                <CardPanel>
-                  {mine.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">Nothing sent yet. Press Send to build a frame transaction.</p>
-                  ) : (
-                    <ul className="-mx-2 flex flex-col">
-                      {mine.map((r) => (
-                        <li key={r.id}>
-                          <button type="button" onClick={() => onOpenRun(r.id)} className="flex w-full cursor-pointer items-center gap-3 rounded-lg px-2 py-2 text-start hover:bg-accent">
-                            <span className="inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-muted">
-                              <Send className="size-3.5" />
-                            </span>
-                            <span className="min-w-0 flex-1">
-                              <span className="block text-sm font-medium">{r.label}</span>
-                              <span className="block font-mono text-xs text-muted-foreground">
-                                {r.frames} frame{r.frames > 1 ? "s" : ""}
-                                {r.hash ? ` · ${short(r.hash)}` : ""}
-                                {r.payer ? " · sponsored" : ""}
-                              </span>
-                            </span>
-                            <Badge variant={TONE[r.status]}>{r.status}</Badge>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </CardPanel>
-              </Card>
-            </div>
+            <Card>
+              <CardHeader>
+                <CardTitle>Details</CardTitle>
+                <CardDescription>Read from the chain, or from the clone code until it exists.</CardDescription>
+              </CardHeader>
+              <CardPanel>
+                <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-3 text-sm">
+                  <dt className="text-muted-foreground">Owner</dt>
+                  <dd className="flex flex-wrap items-center gap-2">
+                    <Hint text={SIGNER_HINT[account.signer]}>{SIGNER_WORD[account.signer]}</Hint>
+                    <CopyAddress address={account.owner} className="text-xs text-muted-foreground" />
+                  </dd>
+                  <dt className="text-muted-foreground">Calls</dt>
+                  <dd><Hint text={ROUTE_HINT(account.route)}>{ROUTE_WORD(account.route)}</Hint></dd>
+                  <dt className="text-muted-foreground">May approve</dt>
+                  <dd className="flex flex-wrap gap-1.5">
+                    <Badge variant={account.scopes & 1 ? "success" : "outline"} className={account.scopes & 1 ? "" : "line-through opacity-60"}>Pay gas</Badge>
+                    <Badge variant={account.scopes & 2 ? "success" : "outline"} className={account.scopes & 2 ? "" : "line-through opacity-60"}>Execute calls</Badge>
+                  </dd>
+                  <dt className="text-muted-foreground">Shapes</dt>
+                  <dd className="flex flex-wrap gap-1.5">
+                    {MODES.map((m) => (
+                      <Hint key={m} text={MODE_HINT[m]}>
+                        <Badge variant={account.modes[m] ? "secondary" : "outline"} className={account.modes[m] ? "" : "line-through opacity-60"}>{MODE_WORD[m]}</Badge>
+                      </Hint>
+                    ))}
+                  </dd>
+                  <dt className="text-muted-foreground">Sent</dt>
+                  <dd className="tabular-nums">{account.nonce} transaction{account.nonce === 1 ? "" : "s"}</dd>
+                </dl>
+              </CardPanel>
+            </Card>
+
           </div>
         ) : (
           <Card>
@@ -201,7 +173,8 @@ export function WalletView({ accounts, active, loading, runs, keys, onSelect, on
         )}
       </div>
 
-      <PqKeys keys={keys} accounts={accounts} />
+      {/* Keys matter only to an account a post-quantum key signs for; a wallet holds its own. */}
+      {account?.signer === "pq" && <PqKeys keys={keys} accounts={accounts} />}
     </div>
   );
 }

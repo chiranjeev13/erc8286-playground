@@ -126,6 +126,24 @@ export interface Receipt {
   frameReceipts?: { status: string; gasUsed: string; stateGasUsed?: string }[];
 }
 
+/** One transaction in an account's history, from /api/pg/history. Amounts in wei. */
+export interface HistoryItem {
+  hash: string;
+  block: number;
+  time: number;
+  /** frame: a frame transaction the account sent. in/out: a plain transaction to or from it. */
+  kind: "frame" | "in" | "out";
+  status: "ok" | "partial" | "failed";
+  counterparty: string | null;
+  value: string;
+  fee: string;
+  /** Who paid the gas when it was not the account. */
+  payer: string | null;
+  /** This transaction created the account. */
+  creates: boolean;
+  calls: { to: string; value: string; settings: boolean; ok: boolean }[];
+}
+
 /** One frame of a sent transaction, as the result step describes it. */
 export interface SentFrame {
   mode: "DEFAULT" | "VERIFY" | "PAY" | "SENDER";

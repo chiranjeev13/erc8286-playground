@@ -1,8 +1,7 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { Wallet } from "lucide-react";
+import { ArrowLeft, Wallet } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTab } from "@/components/ui/tabs";
 import { ToastProvider, toastManager } from "@/components/ui/toast";
 import { api, execute, frameLabel, short, toWei, transfer, DEAD, DORA, FAUCET, SCOPE_WORD, type Account, type FrameSpec, type Info, type Paymaster, type Prepared, type Receipt, type SentFrame, type Sim, type VerifySpec, PRESETS } from "@/lib/api";
 import { connectWallet, describeError, hasWallet, onAccountsChanged, signTypedData } from "@/lib/wallet";
@@ -12,21 +11,25 @@ import { CopyAddress } from "@/components/CopyAddress";
 import { Mascot } from "@/components/Mascot";
 import { SettingsSheet } from "@/components/SettingsSheet";
 import { Rain } from "@/components/Rain";
+import { Stepper } from "@/components/Stepper";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { AccountStep } from "@/steps/AccountStep";
+import { CreateStep } from "@/steps/CreateStep";
 import { ResultStep, type Run } from "@/steps/ResultStep";
 import { ReviewStep } from "@/steps/ReviewStep";
 import { TransactionStep } from "@/steps/TransactionStep";
+import { WalletView } from "@/steps/WalletView";
 
-const STEPS = ["account", "transaction", "review", "result"] as const;
-export type Step = (typeof STEPS)[number];
-const STEP_LABEL: Record<Step, string> = { account: "Account", transaction: "Transaction", review: "Review", result: "Result" };
+/** The dashboard, the create wizard, or one of the three steps of sending. */
+type View = "wallet" | "create" | "transaction" | "review" | "result";
+const SEND_STEPS = ["transaction", "review", "result"] as const;
+const SEND_LABEL = ["Transaction", "Review", "Result"] as const;
 
 /** Unique per run even across hot reloads of this module; a counter reset to 1 could reuse a dismissed run's id and hide the widget. */
 const nextRunId = () => Date.now() * 1000 + Math.floor(Math.random() * 1000);
 
 export function App() {
-  const [step, setStep] = useState<Step>("account");
+  const [view, setView] = useState<View>("wallet");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [info, setInfo] = useState<Info | null>(null);
   const [wallet, setWallet] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
@@ -38,13 +41,16 @@ export function App() {
   const [frames, setFrames] = useState<FrameSpec[]>(() => PRESETS[0]!.frames());
   const [presetId, setPresetId] = useState<string | null>("transfer");
   const [runs, setRuns] = useState<Run[]>([]);
+  /** The run the result step shows; the latest when none was picked from the activity list. */
+  const [shownRun, setShownRun] = useState<number | null>(null);
   const [sending, setSending] = useState(false);
   const keys = useSyncExternalStore(onPqKeysChanged, pqKeys);
   const stored = useSyncExternalStore(onStoredAccountsChanged, storedAccounts);
 
   const account = accounts.find((a) => a.address === active) ?? null;
   const payer = usePaymaster ? paymaster : null;
-  const current = runs[0] ?? null;
+  const latest = runs[0] ?? null;
+  const current = runs.find((r) => r.id === shownRun) ?? latest;
   /** Who can sign for the selected account here: the connected wallet, a post-quantum key in
    * this browser, or nobody present. */
   const signer: "wallet" | "pq" | "other" =
@@ -102,6 +108,7 @@ export function App() {
     if (a.clone) rememberAccount({ address: a.address, signer: a.signer, owner: a.owner, clone: a.clone });
     setAccounts((xs) => [a, ...xs.filter((x) => x.address !== a.address)]);
     setActive(a.address);
+    setView("wallet");
     toastManager.add({ type: "success", title: "Account address reserved", description: `${short(a.address)} owned by ${a.signer === "pq" ? "post-quantum key" : "wallet"} ${short(a.owner)}. Fund it at the faucet, or let the paymaster pay its first transaction.` });
   };
 
@@ -146,7 +153,8 @@ export function App() {
       pq: account.signer === "pq",
     };
     setRuns((rs) => [run, ...rs]);
-    setStep("result");
+    setShownRun(run.id);
+    setView("result");
     setSending(true);
     try {
       const prep = await api<Prepared>("/api/pg/prepare", { account: account.address, frames: wire, clone: account.clone });
@@ -192,19 +200,12 @@ export function App() {
     }
   };
 
-  const reachable = (s: Step): boolean => {
-    if (s === "account") return true;
-    if (s === "transaction") return account !== null;
-    if (s === "review") return account !== null && frames.length > 0;
-    return current !== null;
-  };
-
   return (
     <ToastProvider>
       <div className="relative min-h-svh bg-background text-foreground">
         <Rain />
-        <header className="relative z-10 mx-auto flex max-w-5xl flex-wrap items-center gap-3 px-4 py-4 sm:px-6">
-          <Mascot run={current} />
+        <header className="relative z-10 mx-auto flex max-w-6xl flex-wrap items-center gap-3 px-4 py-4 sm:px-6">
+          <Mascot run={latest} />
           <span className="text-base font-semibold tracking-tight">
             ERC-8286 <span className="text-muted-foreground font-normal">Playground</span>
           </span>
@@ -236,83 +237,101 @@ export function App() {
             <SettingsSheet
               account={account}
               paymaster={paymaster}
+              open={settingsOpen}
+              onOpenChange={setSettingsOpen}
               onSettings={(f) => {
                 setFrames(f);
                 setPresetId(null);
-                setStep("transaction");
+                setView("transaction");
               }}
             />
             <ThemeToggle />
           </div>
         </header>
 
-        <main className="relative z-10 mx-auto max-w-5xl px-4 pb-16 sm:px-6">
-          {/* A progress indicator only: the steps move with the Next and Back buttons. */}
-          <Tabs value={step}>
-            <TabsList variant="underline" className="mb-6 pointer-events-none" aria-hidden="true">
-              {STEPS.map((s, i) => (
-                <TabsTab key={s} value={s} tabIndex={-1} className={reachable(s) ? "" : "opacity-50"}>
-                  <span className="me-2 inline-flex size-5 items-center justify-center rounded-full bg-muted text-xs tabular-nums">{i + 1}</span>
-                  {STEP_LABEL[s]}
-                </TabsTab>
-              ))}
-            </TabsList>
-          </Tabs>
-
-          {step === "account" && (
-            <AccountStep
+        <main className="relative z-10 mx-auto max-w-6xl px-4 pb-16 sm:px-6">
+          {view === "wallet" && (
+            <WalletView
               accounts={accounts}
               active={active}
+              loading={stored.length > 0 && accounts.length === 0}
+              runs={runs}
+              keys={keys}
+              onSelect={setActive}
+              onCreate={() => setView("create")}
+              onSend={() => setView("transaction")}
+              onSettings={() => setSettingsOpen(true)}
+              onOpenRun={(id) => {
+                setShownRun(id);
+                setView("result");
+              }}
+              onRefresh={refreshAccount}
+            />
+          )}
+          {view === "create" && (
+            <CreateStep
               wallet={wallet}
               keys={keys}
               onConnect={() => void connect()}
               connecting={connecting}
-              onSelect={setActive}
               onDeployed={onDeployed}
-              onNext={() => setStep("transaction")}
+              onCancel={accounts.length > 0 || stored.length > 0 ? () => setView("wallet") : undefined}
             />
           )}
-          {step === "transaction" && account && (
-            <TransactionStep
-              account={account}
-              verify={verify}
-              frames={frames}
-              presetId={presetId}
-              paymaster={paymaster}
-              payer={payer}
-              onPayer={(p) => {
-                setUsePaymaster(p);
-                // A sponsored account approves execution only; a self-paying one needs both.
-                setVerify((x) => ({ ...x, scope: p ? 2 : 3 }));
-              }}
-              onChange={(v, f, p) => {
-                setVerify(v);
-                setFrames(f);
-                setPresetId(p);
-              }}
-              onBack={() => setStep("account")}
-              onNext={() => setStep("review")}
-            />
+
+          {(view === "transaction" || view === "review" || view === "result") && (
+            <div className="mx-auto mb-6 flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-3">
+              <Button variant="ghost" size="sm" onClick={() => setView("wallet")}>
+                <ArrowLeft /> Wallet
+              </Button>
+              <div className="min-w-0 flex-1">
+                <Stepper steps={SEND_LABEL} current={SEND_STEPS.indexOf(view)} />
+              </div>
+            </div>
           )}
-          {step === "review" && account && (
-            <ReviewStep
-              account={account}
-              verify={verify}
-              frames={frames}
-              payer={payer}
-              signer={signer}
-              sending={sending}
-              onConnect={() => void connect()}
-              onBack={() => setStep("transaction")}
-              onSend={() => void send()}
-            />
-          )}
-          {step === "result" && current && (
-            <ResultStep run={current} history={runs.slice(1)} onAgain={() => setStep("transaction")} onNewAccount={() => setStep("account")} />
-          )}
+          <div className="mx-auto max-w-5xl">
+            {view === "transaction" && account && (
+              <TransactionStep
+                account={account}
+                verify={verify}
+                frames={frames}
+                presetId={presetId}
+                paymaster={paymaster}
+                payer={payer}
+                onPayer={(p) => {
+                  setUsePaymaster(p);
+                  // A sponsored account approves execution only; a self-paying one needs both.
+                  setVerify((x) => ({ ...x, scope: p ? 2 : 3 }));
+                }}
+                onChange={(v, f, p) => {
+                  setVerify(v);
+                  setFrames(f);
+                  setPresetId(p);
+                }}
+                onBack={() => setView("wallet")}
+                onNext={() => setView("review")}
+              />
+            )}
+            {view === "review" && account && (
+              <ReviewStep
+                account={account}
+                verify={verify}
+                frames={frames}
+                payer={payer}
+                signer={signer}
+                sending={sending}
+                onConnect={() => void connect()}
+                onBack={() => setView("transaction")}
+                onSend={() => void send()}
+              />
+            )}
+            {view === "result" && current && (
+              <ResultStep run={current} history={runs.filter((r) => r.id !== current.id)} onAgain={() => setView("transaction")} onWallet={() => setView("wallet")} />
+            )}
+          </div>
         </main>
 
-        <footer className="relative z-10 mx-auto flex max-w-5xl items-center justify-center gap-2 px-4 pb-8 text-sm text-muted-foreground sm:px-6">
+        <footer className="relative z-10 mx-auto flex max-w-6xl items-center justify-center gap-2 px-4 pb-8 text-sm text-muted-foreground sm:px-6">
           Made with love by{" "}
           <a className="inline-flex items-center gap-1.5 underline-offset-4 hover:underline" href="https://x.com/0xChiranjeev" target="_blank" rel="noreferrer">
             <img src="/wizard.png" alt="" className="size-5 rounded-sm" style={{ imageRendering: "pixelated" }} />

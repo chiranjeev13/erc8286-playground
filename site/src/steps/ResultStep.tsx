@@ -36,10 +36,10 @@ interface Props {
   run: Run;
   history: Run[];
   onAgain: () => void;
-  onNewAccount: () => void;
+  onWallet: () => void;
 }
 
-const TONE: Record<Run["status"], "info" | "success" | "warning" | "error"> = {
+export const TONE: Record<Run["status"], "info" | "success" | "warning" | "error"> = {
   signing: "info",
   simulating: "info",
   submitted: "info",
@@ -49,7 +49,7 @@ const TONE: Record<Run["status"], "info" | "success" | "warning" | "error"> = {
   error: "error",
 };
 
-export function ResultStep({ run, history, onAgain, onNewAccount }: Props) {
+export function ResultStep({ run, history, onAgain, onWallet }: Props) {
   const r = run.receipt;
   const stages = [
     { name: run.pq ? "Post-quantum signature" : "Wallet signature", state: run.status === "signing" ? "busy" : run.status === "error" ? "bad" : "ok" },
@@ -111,8 +111,8 @@ export function ResultStep({ run, history, onAgain, onNewAccount }: Props) {
 
       <Card>
         <CardFooter className="justify-between">
-          <Button variant="ghost" onClick={onNewAccount}>
-            New account
+          <Button variant="ghost" onClick={onWallet}>
+            Back to wallet
           </Button>
           <Button onClick={onAgain}>Send another</Button>
         </CardFooter>

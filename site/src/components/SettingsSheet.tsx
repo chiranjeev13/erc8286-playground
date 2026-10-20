@@ -17,11 +17,12 @@ interface Props {
   /** Frames that change the account's settings; the caller sends them. */
   onSettings: (frames: FrameSpec[]) => void;
   paymaster: Paymaster | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }
 
 /** The settings button in the header, opening a side panel with the account's settings and the paymasters. */
-export function SettingsSheet({ account, onSettings, paymaster }: Props) {
-  const [open, setOpen] = useState(false);
+export function SettingsSheet({ account, onSettings, paymaster, open, onOpenChange: setOpen }: Props) {
   return (
     <Sheet open={open} onOpenChange={setOpen}>
       <SheetTrigger render={<Button variant="ghost" size="icon" aria-label="Settings" />}>

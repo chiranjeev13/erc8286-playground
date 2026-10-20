@@ -55,7 +55,7 @@ export function WalletView({ accounts, active, loading, runs, keys, onSelect, on
                     <a className="underline underline-offset-4" href="https://eips.ethereum.org/EIPS/eip-8141" target="_blank" rel="noreferrer">
                       EIP-8141
                     </a>{" "}
-                    frame transactions: the account approves each one itself, in a VERIFY frame, with no outer signature. Create one in three choices: who signs for it, how its calls run, and what it may do.
+                    frame transactions.
                   </EmptyDescription>
                 </EmptyHeader>
                 <EmptyContent>

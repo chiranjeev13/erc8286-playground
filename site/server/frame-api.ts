@@ -6,14 +6,16 @@
 //   GET  /api/pg/accounts?owner=a,b    every account this playground deployed for those owners
 //                                      (wallet addresses, or SPHINCS pkRoots for post-quantum accounts)
 //   GET  /api/pg/paymaster             the common Paymaster (address, balance, low); pays for whatever reaches it
-//   POST /api/pg/prepare               { account, frames } -> typed data and digest for the owner
-//   POST /api/pg/send                  { account, verify, frames, signature, nonce, payer? } -> simulate, submit
+//   POST /api/pg/prepare               { account, verify, frames, payer? } -> nonce, fees, and what the owner signs:
+//                                      sig_hash for a post-quantum key, typed data carrying it for a wallet
+//   POST /api/pg/send                  { account, verify, frames, payer?, nonce, fees, signature } -> simulate, submit
 //   GET  /api/pg/receipt?hash=0x..     the type-0x06 receipt, or null
 //   GET  /api/pg/history?address=0x..  the account's transactions, newest first: blocks from the explorer, transactions from the node
 //
 // Accounts are ERC8286FrameAccount clones on ethrex's
 // Hegota testnet (chain 8141), each owned by a visitor's wallet. The browser signs the typed
-// data from /prepare and passes the signature to /send; this server never signs for an account.
+// data from /prepare and passes the signature to /send, which puts it in an EIP-8141 ARBITRARY
+// signature entry; this server never signs for an account.
 // A Paymaster pays for an account that only approves execution; it checks nothing.
 
 import { existsSync, readFileSync } from "node:fs";
@@ -29,7 +31,6 @@ import {
   encodeFunctionData,
   encodePacked,
   getAddress,
-  hashTypedData,
   hexToBytes,
   http,
   keccak256,
@@ -45,6 +46,8 @@ import {
   authTypedData,
   nonceManagerFor,
   nonceSlot,
+  witnessRef,
+  witnessSig,
 } from "../../scripts/lib/frametx.js";
 import { FRAME_MODES, type FrameModeName } from "../../scripts/lib/policy.js";
 
@@ -481,19 +484,97 @@ function senderFrames(account: Hex, frames: FrameIn[]): Frame[] {
   });
 }
 
-/** What the owner signs: a wallet gets the typed data, a post-quantum key the digest. */
-async function prepare(env: Env, account: Hex, signer: Signer, frames: FrameIn[]) {
-  const nonce = await keyedNonce(env, account, signer);
-  const input = { chainId: CHAIN_ID, nonce, sender: account, nonceKeys: [BigInt(validatorFor(env, signer))], senderFrames: senderFrames(account, frames) };
-  // Wallets want domain.chainId as a number; every other bigint is fine as a decimal string.
-  const forWallet = (acct: Hex) => {
-    const td = authTypedData({ ...input, account: acct });
-    return { ...td, domain: { ...td.domain, chainId: CHAIN_ID } };
+/** Everything that fixes the transaction besides nonce, fees and signature, read the same way
+ * by /prepare and /send: the owner signs sig_hash, so both must build the same bytes. */
+async function plan(env: Env, body: Record<string, unknown>) {
+  const account = address(body.account, "account");
+  const v = (body.verify ?? {}) as Record<string, unknown>;
+  const scope = Number(v.scope);
+  if (scope !== 1 && scope !== 2 && scope !== 3) throw new Error("scope must be 1, 2 or 3");
+  const frames = parseFrames(body.frames);
+  const payer = await parsePayer(env, body.payer);
+  // With a payer, the account approves execution only: APPROVE(0x3) would make it the payer
+  // itself and the paymaster's APPROVE(0x1) would then revert.
+  if (payer && scope !== 2) throw new Error("with a paymaster the account's allowed scope must be 0x2");
+  const view = await assertCurrent(env, account, parseClone(body.clone));
+  if (!view.deployed && !view.clone) throw new Error("this account has no code and no way to get it");
+  return { account, scope, frames, payer, view, tamper: v.tamper === true };
+}
+type Plan = Awaited<ReturnType<typeof plan>>;
+interface Fees {
+  maxFee: bigint;
+  maxPriorityFee: bigint;
+}
+
+/** The fees a send signs over, from /prepare; anything else would move sig_hash. */
+function parseFees(v: unknown): Fees {
+  const o = (v ?? {}) as Record<string, unknown>;
+  const n = (x: unknown, what: string) => {
+    if (typeof x !== "string" || !/^\d{1,30}$/.test(x)) throw new Error(`${what} must be a decimal string of wei`);
+    return BigInt(x);
   };
-  const typedData = forWallet(account);
-  // The same message both validators check: the SPHINCS signer signs this hash directly.
-  const digest = hashTypedData(typedData as Parameters<typeof hashTypedData>[0]);
-  return { nonce, signer, typedData, digest };
+  const fees = { maxFee: n(o.maxFee, "maxFee"), maxPriorityFee: n(o.maxPriorityFee, "maxPriorityFee") };
+  if (fees.maxPriorityFee > fees.maxFee) throw new Error("maxPriorityFee above maxFee");
+  return fees;
+}
+
+/**
+ * The frame transaction for `p`. The owner's signature rides in an ARBITRARY entry whose
+ * bytes sig_hash elides, so the transaction without it has the hash the owner signs; the
+ * VERIFY frame's data only names that entry.
+ */
+function buildTx(env: Env, p: Plan, nonce: number, fees: Fees, signature?: Hex): FrameTx {
+  const signer = p.view.signer;
+  return new FrameTx({
+    chainId: CHAIN_ID,
+    nonceKeys: [BigInt(validatorFor(env, signer))],
+    nonceSeq: nonce,
+    sender: p.account,
+    frames: [
+      ...(!p.view.deployed && p.view.clone ? [deployFrame(env, p.view.clone, signer)] : []),
+      new Frame({
+        mode: FrameMode.VERIFY,
+        flags: p.scope,
+        target: p.account,
+        gasLimit: VERIFY_GAS[signer],
+        // Approving payment bumps the sender's nonce, and that slot's state gas is charged
+        // to whichever frame approves payment.
+        stateGasLimit: p.payer ? 0 : KEYED_NONCE_STATE_GAS,
+        data: encodeFunctionData({ abi: VERIFY_ABI, functionName: "verify", args: [witnessRef()] }),
+      }),
+      ...(p.payer
+        ? [
+            new Frame({
+              mode: FrameMode.VERIFY,
+              flags: 1,
+              target: p.payer,
+              gasLimit: PAY_GAS,
+              stateGasLimit: KEYED_NONCE_STATE_GAS,
+              data: encodeFunctionData({ abi: PAY_ABI, functionName: "pay" }),
+            }),
+          ]
+        : []),
+      ...senderFrames(p.account, p.frames),
+    ],
+    signatures: [witnessSig(signature)],
+    maxPriorityFee: fees.maxPriorityFee,
+    maxFee: fees.maxFee,
+  });
+}
+
+/** What the owner signs: a wallet gets typed data carrying sig_hash, a post-quantum key
+ * sig_hash itself. The nonce and fees come back to /send unchanged. */
+async function prepare(env: Env, p: Plan) {
+  const signer = p.view.signer;
+  const nonce = await keyedNonce(env, p.account, signer);
+  const block = await rpc<{ baseFeePerGas?: Hex }>(env.rpc, "eth_getBlockByNumber", ["latest", false]);
+  const maxPriorityFee = 1_000_000_000n;
+  const fees = { maxPriorityFee, maxFee: BigInt(block.baseFeePerGas ?? "0x0") * 2n + maxPriorityFee };
+  const tx = buildTx(env, p, nonce, fees);
+  // Wallets want domain.chainId as a number; every other bigint is fine as a decimal string.
+  const td = authTypedData(tx);
+  const typedData = { ...td, domain: { ...td.domain, chainId: CHAIN_ID } };
+  return { nonce, signer, typedData, digest: tx.sigHash(), fees: { maxFee: fees.maxFee.toString(), maxPriorityFee: fees.maxPriorityFee.toString() } };
 }
 
 /** Refuses an account configured for a validator this playground does not sign for. */
@@ -529,69 +610,19 @@ function tampered(signature: Hex): Hex {
 }
 
 async function send(env: Env, body: Record<string, unknown>) {
-  const account = address(body.account, "account");
-  const v = (body.verify ?? {}) as Record<string, unknown>;
-  const scope = Number(v.scope);
-  if (scope !== 1 && scope !== 2 && scope !== 3) throw new Error("scope must be 1, 2 or 3");
-  const frames = parseFrames(body.frames);
-  const payer = await parsePayer(env, body.payer);
-  // With a payer, the account approves execution only: APPROVE(0x3) would make it the payer
-  // itself and the paymaster's APPROVE(0x1) would then revert.
-  if (payer && scope !== 2) throw new Error("with a paymaster the account's allowed scope must be 0x2");
-
-  const view = await assertCurrent(env, account, parseClone(body.clone));
+  const p = await plan(env, body);
+  const { account, payer, view } = p;
   const signer = view.signer;
-  const { nonce } = await prepare(env, account, signer, frames);
-  const clone = view.clone;
-  if (!view.deployed && !clone) throw new Error("this account has no code and no way to get it");
+  const nonce = await keyedNonce(env, account, signer);
 
-  // The owner signed the message from /prepare over a nonce; if a block moved it since,
-  // the signature is for a different transaction and must be redone.
+  // The owner signed sig_hash over a nonce and fees; if a block moved the nonce since, the
+  // signature is for a different transaction and must be redone.
   const sigLen = signer === "pq" ? SPHINCS_SIG_LEN : 65;
   if (typeof body.signature !== "string" || !new RegExp(`^0x[0-9a-fA-F]{${sigLen * 2}}$`).test(body.signature)) throw new Error(`signature must be ${sigLen} bytes`);
   if (Number(body.nonce) !== nonce) throw new Error(`nonce moved to ${nonce}; sign again`);
   let signature = body.signature as Hex;
-  if (v.tamper === true) signature = tampered(signature);
-  const verifyGas = VERIFY_GAS[signer];
-
-  const block = await rpc<{ baseFeePerGas?: Hex }>(env.rpc, "eth_getBlockByNumber", ["latest", false]);
-  const maxPriorityFee = 1_000_000_000n;
-  const maxFee = BigInt(block.baseFeePerGas ?? "0x0") * 2n + maxPriorityFee;
-  const tx = new FrameTx({
-    chainId: CHAIN_ID,
-    nonceKeys: [BigInt(validatorFor(env, signer))],
-    nonceSeq: nonce,
-    sender: account,
-    frames: [
-      ...(!view.deployed && clone ? [deployFrame(env, clone, signer)] : []),
-      new Frame({
-        mode: FrameMode.VERIFY,
-        flags: scope,
-        target: account,
-        gasLimit: verifyGas,
-        // Approving payment bumps the sender's nonce, and that slot's state gas is charged
-        // to whichever frame approves payment.
-        stateGasLimit: payer ? 0 : KEYED_NONCE_STATE_GAS,
-        data: encodeFunctionData({ abi: VERIFY_ABI, functionName: "verify", args: [signature] }),
-      }),
-      ...(payer
-        ? [
-            new Frame({
-              mode: FrameMode.VERIFY,
-              flags: 1,
-              target: payer,
-              gasLimit: PAY_GAS,
-              stateGasLimit: KEYED_NONCE_STATE_GAS,
-              data: encodeFunctionData({ abi: PAY_ABI, functionName: "pay" }),
-            }),
-          ]
-        : []),
-      ...senderFrames(account, frames),
-    ],
-    signatures: [],
-    maxPriorityFee,
-    maxFee,
-  });
+  if (p.tamper) signature = tampered(signature);
+  const tx = buildTx(env, p, nonce, parseFees(body.fees), signature);
   const raw = tx.raw();
 
   let sim: Record<string, unknown>;
@@ -803,10 +834,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse, next: ()
     }
 
     if (url.pathname === "/api/pg/prepare" && req.method === "POST") {
-      const body = await readJson(req);
-      const account = address(body.account, "account");
-      const view = await assertCurrent(env, account, parseClone(body.clone));
-      return reply(res, 200, await prepare(env, account, view.signer, parseFrames(body.frames)));
+      return reply(res, 200, await prepare(env, await plan(env, await readJson(req))));
     }
 
     if (url.pathname === "/api/pg/send" && req.method === "POST") {

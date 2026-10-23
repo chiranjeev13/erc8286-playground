@@ -1,6 +1,6 @@
 // Post-quantum keys for the playground. A SPHINCS (hash-based) key is generated in the
 // browser and kept in localStorage; there is no wallet that can hold one yet. The account's
-// validator checks a SPHINCS signature over the same digest an ECDSA wallet would sign, so
+// validator checks a SPHINCS signature over the transaction's sig_hash, so
 // an account owned this way has no elliptic-curve key anywhere on its approval path.
 //
 // Demo storage: the secret sits unprotected in this browser. Test funds only.

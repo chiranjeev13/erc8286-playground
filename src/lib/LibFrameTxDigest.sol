@@ -3,32 +3,46 @@ pragma solidity ^0.8.21;
 
 import {LibERC8286} from "./LibERC8286.sol";
 
-/// @notice The EIP-712 message an owner or sponsor signs to approve a frame transaction:
-/// the sender, the nonce, the EIP-8250 key set, and every SENDER frame.
-/// @dev Shared by ECDSAFrameValidator and SphincsFrameValidator (domain = the account). A
-/// paymaster with a sponsor signature would use it under its own domain, which is why
-/// `verifyingContract` is a parameter. The VERIFY frame's own data is left out, since the signature travels
-/// inside it and `sig_hash` would make that circular. `sender` binds the signature to one
-/// transaction's sender, and the sender's nonce is consumed when payment is approved, so a
-/// (sender, nonce) pair is signed over once whether the signer sends or only pays.
-/// Every function is `internal` so it inlines into a validator reached by DELEGATECALL.
+/// @notice What a frame validator's owner signs to approve a frame transaction, and where
+/// that signature travels.
+/// @dev The signature rides in an EIP-8141 `ARBITRARY` signature entry with empty `msg`, and
+/// the VERIFY frame's data is only that entry's index. Those bytes are elided from `sig_hash`
+/// (`TXPARAM(0x08)`), so the owner signs over `sig_hash`, which commits the whole transaction:
+/// every frame verbatim (gas limits included), the fees, the nonce keys and the shape of the
+/// signature list. Nothing can be rewrapped around a signature once it is made.
+///
+/// A hash-based key signs `sig_hash` itself. A wallet will not sign a bare 32-byte hash, so it
+/// signs EIP-712 typed data carrying `sig_hash` beside a readable list of the SENDER frames:
+/// the frames are for the person approving, `sig_hash` is what binds.
+///
+/// Shared by ECDSAFrameValidator and SphincsFrameValidator (domain = the account). A paymaster
+/// with a sponsor signature would use it under its own domain, which is why
+/// `verifyingContract` is a parameter. Every function is `internal` so it inlines into a
+/// validator reached by DELEGATECALL.
 library LibFrameTxDigest {
     bytes32 private constant DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     bytes32 private constant NAME_HASH = keccak256("ERC-8286 Frame Validator");
-    bytes32 private constant VERSION_HASH = keccak256("1");
+    bytes32 private constant VERSION_HASH = keccak256("2");
     bytes32 private constant FRAME_TYPEHASH =
         keccak256("Frame(address target,uint256 value,uint256 flags,bytes data)");
     bytes32 private constant FRAMETX_TYPEHASH = keccak256(
-        "FrameTx(address sender,uint256 nonce,bytes32 nonceKeysHash,Frame[] frames)Frame(address target,uint256 value,uint256 flags,bytes data)"
+        "FrameTx(address sender,uint256 nonce,bytes32 sigHash,Frame[] frames)Frame(address target,uint256 value,uint256 flags,bytes data)"
     );
+
+    /// @dev The signature a VERIFY frame points at: `data` is `abi.encode(uint256 index)` into
+    /// `tx.signatures`, and the entry must be `ARBITRARY`. Empty for anything else.
+    function witness(bytes calldata data) internal view returns (bytes memory) {
+        if (data.length != 32) return "";
+        return LibERC8286.arbitrarySignature(abi.decode(data, (uint256)));
+    }
 
     /// @dev The EIP-712 domain separator for `verifyingContract`, as a wallet computes it.
     function domainSeparator(address verifyingContract) internal view returns (bytes32) {
         return keccak256(abi.encode(DOMAIN_TYPEHASH, NAME_HASH, VERSION_HASH, block.chainid, verifyingContract));
     }
 
-    /// @dev The digest the signer of the executing transaction must have signed, under
+    /// @dev The typed-data digest a wallet signs for the executing transaction, under
     /// `verifyingContract`'s domain. Reads the transaction through EIP-8141 introspection.
     function digest(address verifyingContract) internal view returns (bytes32) {
         uint256 numFrames = LibERC8286.frameCount();
@@ -46,14 +60,12 @@ library LibFrameTxDigest {
                 )
             );
         }
-        // nonceKeysHash commits the EIP-8250 key set, so a validator selected from
-        // nonce_keys[0] is signed over too.
         bytes32 structHash = keccak256(
             abi.encode(
                 FRAMETX_TYPEHASH,
                 LibERC8286.txSender(),
                 LibERC8286.txNonce(),
-                LibERC8286.nonceKeysHash(),
+                LibERC8286.sigHash(),
                 keccak256(abi.encodePacked(frameHashes))
             )
         );
@@ -62,11 +74,16 @@ library LibFrameTxDigest {
 
     /// @dev `ecrecover` over `digest(verifyingContract)` for a 65-byte r || s || v signature.
     /// Zero for malformed input or a failed recovery.
-    function recover(address verifyingContract, bytes calldata signature) internal view returns (address) {
+    function recover(address verifyingContract, bytes memory signature) internal view returns (address) {
         if (signature.length != 65) return address(0);
-        bytes32 r = bytes32(signature[0:32]);
-        bytes32 s = bytes32(signature[32:64]);
-        uint8 v = uint8(signature[64]);
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        assembly ("memory-safe") {
+            r := mload(add(signature, 0x20))
+            s := mload(add(signature, 0x40))
+            v := byte(0, mload(add(signature, 0x60)))
+        }
         return ecrecover(digest(verifyingContract), v, r, s);
     }
 }

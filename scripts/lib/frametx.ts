@@ -223,16 +223,19 @@ export function nonceKeysHash(nonceKeys: Numeric[]): Hex {
   return keccak256(concat([w(nonceKeys.length), ...nonceKeys.map(w)]));
 }
 
-export interface AuthDigestInput {
-  chainId: Numeric;
-  nonce: Numeric;
-  /** `tx.sender`, whose nonce and frames these are. */
-  sender: Numeric;
-  /** The account whose owner signs: the sender itself, or an account that only pays. */
-  account?: Numeric;
-  nonceKeys: Numeric[];
-  senderFrames: Frame[];
-}
+/** Where the owner's signature sits in `tx.signatures`; the VERIFY frame's data names it. */
+export const WITNESS_INDEX = 0;
+
+/**
+ * The owner's signature as the validators read it: an ARBITRARY entry with empty msg. Its
+ * bytes are elided from sig_hash, so it can sign over sig_hash. Build the transaction with
+ * `witnessSig()` first, sign `tx.sigHash()` (or `authTypedData(tx)`), then rebuild it with
+ * the signature: the hash does not move.
+ */
+export const witnessSig = (signature: Hex = "0x"): FrameSig => new FrameSig({ scheme: SigScheme.ARBITRARY, signer: null, signature });
+
+/** The VERIFY frame's payload: `abi.encode(uint256 index)` of the witness entry. */
+export const witnessRef = (index: number = WITNESS_INDEX): Hex => numberToHex(index, { size: 32 });
 
 /** The EIP-712 types ECDSAFrameValidator checks. `EIP712Domain` is what eth_signTypedData_v4 wants. */
 export const AUTH_TYPES = {
@@ -245,7 +248,7 @@ export const AUTH_TYPES = {
   FrameTx: [
     { name: "sender", type: "address" },
     { name: "nonce", type: "uint256" },
-    { name: "nonceKeysHash", type: "bytes32" },
+    { name: "sigHash", type: "bytes32" },
     { name: "frames", type: "Frame[]" },
   ],
   Frame: [
@@ -260,48 +263,40 @@ export interface AuthTypedData {
   domain: { name: string; version: string; chainId: bigint; verifyingContract: Hex };
   types: typeof AUTH_TYPES;
   primaryType: "FrameTx";
-  message: { sender: Hex; nonce: bigint; nonceKeysHash: Hex; frames: { target: Hex; value: bigint; flags: bigint; data: Hex }[] };
+  message: { sender: Hex; nonce: bigint; sigHash: Hex; frames: { target: Hex; value: bigint; flags: bigint; data: Hex }[] };
 }
 
 /**
- * The typed data ECDSAFrameValidator._authDigest() hashes: the sender, the nonce, the
- * EIP-8250 key set, and every SENDER frame, under a domain whose verifyingContract is the
- * signing account. That account is the sender itself, or, for a payment-only VERIFY frame,
- * an account that pays for the sender's transaction.
- *
- * flags is included because bit 2 is EIP-8141's ATOMIC_BATCH_FLAG: it decides whether the
- * frames revert together, so it has to be signed over like any other frame field.
- *
- * nonceKeysHash commits the EIP-8250 key set. When the account selects its validator from
- * nonce_keys[0], that selection is signed over here: swap the validator and the digest moves.
- *
- * A signature in VERIFY-frame data cannot sign over sig_hash -- that hash commits the frame
- * data verbatim, so it would be a circular fixed point. Hence this reconstruction, which
- * covers only what the transaction will actually do.
+ * The typed data a wallet signs for `tx`, mirroring LibFrameTxDigest.digest(): sig_hash, which
+ * commits the whole transaction, beside the sender, the nonce and every SENDER frame, which
+ * are there so the wallet can show what is being approved. The domain's verifyingContract
+ * is the signing account: the sender itself, or an account that only pays for it.
  */
-export function authTypedData({ chainId, nonce, sender, account = sender, nonceKeys, senderFrames }: AuthDigestInput): AuthTypedData {
+export function authTypedData(tx: FrameTx, account: Numeric = tx.sender): AuthTypedData {
   return {
     domain: {
       name: "ERC-8286 Frame Validator",
-      version: "1",
-      chainId: BigInt(chainId),
+      version: "2",
+      chainId: BigInt(tx.chainId),
       verifyingContract: addr20(account),
     },
     types: AUTH_TYPES,
     primaryType: "FrameTx",
     message: {
-      sender: addr20(sender),
-      nonce: BigInt(nonce),
-      nonceKeysHash: nonceKeysHash(nonceKeys),
-      frames: senderFrames.map((f) => {
-        if (f.target === null) throw new Error("a SENDER frame in the digest needs a resolved target");
-        return { target: addr20(f.target), value: BigInt(f.value), flags: BigInt(f.flags), data: f.data };
-      }),
+      sender: addr20(tx.sender),
+      nonce: BigInt(tx.nonceSeq),
+      sigHash: tx.sigHash(),
+      frames: tx.frames
+        .filter((f) => f.mode === FrameMode.SENDER)
+        .map((f) => {
+          if (f.target === null) throw new Error("a SENDER frame in the digest needs a resolved target");
+          return { target: addr20(f.target), value: BigInt(f.value), flags: BigInt(f.flags), data: f.data };
+        }),
     },
   };
 }
 
-/** Mirror of ECDSAFrameValidator._authDigest(): the EIP-712 hash of `authTypedData`. */
-export function authDigest(input: AuthDigestInput): Hex {
-  return hashTypedData(authTypedData(input));
+/** Mirror of LibFrameTxDigest.digest(): the EIP-712 hash of `authTypedData`. */
+export function authDigest(tx: FrameTx, account?: Numeric): Hex {
+  return hashTypedData(authTypedData(tx, account));
 }

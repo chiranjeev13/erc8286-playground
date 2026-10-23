@@ -18,7 +18,7 @@ import {
   type Address,
   type Hex,
 } from "viem";
-import { Frame, FrameMode, FrameTx, KEYED_NONCE_STATE_GAS, authDigest, nonceManagerFor, nonceSlot } from "./lib/frametx.js";
+import { Frame, FrameMode, FrameTx, KEYED_NONCE_STATE_GAS, authDigest, nonceManagerFor, nonceSlot, witnessRef, witnessSig } from "./lib/frametx.js";
 import { connect, need, simulate, type TypedReceipt } from "./lib/connect.js";
 
 const APPROVE_SCOPE_EXECUTION_AND_PAYMENT = 0x03;
@@ -139,35 +139,31 @@ console.log(
 );
 if (!supported) throw new Error("the account does not support the presented SENDER-frame mode");
 
-const digest = authDigest({
-  chainId,
-  nonce,
-  sender: account,
-  nonceKeys,
-  senderFrames: grouped,
-});
-const frameSig = await owner.sign({ hash: digest });
-
-const tx = new FrameTx({
-  chainId,
-  nonceKeys,
-  nonceSeq: nonce,
-  sender: account,
-  frames: [
-    new Frame({
-      mode: FrameMode.VERIFY,
-      flags: APPROVE_SCOPE_EXECUTION_AND_PAYMENT,
-      target: account,
-      gasLimit: 200_000,
-      stateGasLimit: KEYED_NONCE_STATE_GAS,
-      data: encodeFunctionData({ abi: VERIFY_ABI, functionName: "verify", args: [frameSig] }),
-    }),
-    ...grouped,
-  ],
-  signatures: [],
-  maxPriorityFee,
-  maxFee,
-});
+// Built once without the signature, whose ARBITRARY entry sig_hash elides, then signed and
+// rebuilt with it; the VERIFY frame's data only names the entry.
+const build = (signature?: Hex) =>
+  new FrameTx({
+    chainId,
+    nonceKeys,
+    nonceSeq: nonce,
+    sender: account,
+    frames: [
+      new Frame({
+        mode: FrameMode.VERIFY,
+        flags: APPROVE_SCOPE_EXECUTION_AND_PAYMENT,
+        target: account,
+        gasLimit: 200_000,
+        stateGasLimit: KEYED_NONCE_STATE_GAS,
+        data: encodeFunctionData({ abi: VERIFY_ABI, functionName: "verify", args: [witnessRef()] }),
+      }),
+      ...grouped,
+    ],
+    signatures: [witnessSig(signature)],
+    maxPriorityFee,
+    maxFee,
+  });
+const digest = authDigest(build());
+const tx = build(await owner.sign({ hash: digest }));
 
 console.log(`\nframes: 1 VERIFY + ${grouped.length} SENDER`);
 grouped.forEach((f, i) => {

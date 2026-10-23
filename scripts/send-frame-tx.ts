@@ -27,7 +27,7 @@ import {
   size,
   type Hex,
 } from "viem";
-import { Frame, FrameMode, FrameTx, KEYED_NONCE_STATE_GAS, authDigest, nonceManagerFor, nonceSlot } from "./lib/frametx.js";
+import { Frame, FrameMode, FrameTx, KEYED_NONCE_STATE_GAS, authDigest, nonceManagerFor, nonceSlot, witnessRef, witnessSig } from "./lib/frametx.js";
 import { connect, need, simulate, type TypedReceipt } from "./lib/connect.js";
 
 const APPROVE_SCOPE_EXECUTION_AND_PAYMENT = 0x03;
@@ -100,8 +100,6 @@ const maxFee = (block.baseFeePerGas ?? 0n) * 2n + maxPriorityFee;
 console.log(`account   ${account}  balance ${formatEther(balance)} ETH  nonce ${nonce}`);
 console.log(`validator ${validator}  owner ${owner.address}  nonce_seq ${nonce}`);
 
-// The SENDER frames are what the validator's digest commits to, so they are fixed before
-// the VERIFY frame's data (which carries the signature over that digest) can exist.
 const senderFrame = new Frame({
   mode: FrameMode.SENDER,
   target: to,
@@ -111,13 +109,32 @@ const senderFrame = new Frame({
   value: amount,
 });
 
-const digest = authDigest({
-  chainId,
-  nonce,
-  sender: account,
-  nonceKeys,
-  senderFrames: [senderFrame],
-});
+// The signature rides in an ARBITRARY entry whose bytes sig_hash elides, so the transaction
+// is built once without it, signed, and rebuilt with it; the hash it signs does not move.
+// The VERIFY frame's data only names that entry, through the account's verify(bytes).
+const build = (signature?: Hex) =>
+  new FrameTx({
+    chainId,
+    nonceKeys,
+    nonceSeq: nonce,
+    sender: account,
+    frames: [
+      new Frame({
+        mode: FrameMode.VERIFY,
+        flags: APPROVE_SCOPE_EXECUTION_AND_PAYMENT,
+        target: account,
+        gasLimit: 200_000,
+        stateGasLimit: KEYED_NONCE_STATE_GAS,
+        data: encodeFunctionData({ abi: VERIFY_ABI, functionName: "verify", args: [witnessRef()] }),
+      }),
+      senderFrame,
+    ],
+    signatures: [witnessSig(signature)],
+    maxPriorityFee,
+    maxFee,
+  });
+
+const digest = authDigest(build());
 // ECDSAFrameValidator reads r(32) || s(32) || v(1) and hands them to ecrecover, which wants
 // v in {27,28} -- which is exactly what a viem account's `sign` serializes.
 let frameSig: Hex = await owner.sign({ hash: digest });
@@ -127,35 +144,7 @@ if (badSig) {
   frameSig = bytesToHex(bytes);
   console.log("BAD_SIG: signature corrupted on purpose");
 }
-
-// A VERIFY frame's `data` is the calldata of the call to its target, so the account's
-// verify(bytes) is reached through an ordinary ABI-encoded call.
-const verifyData = encodeFunctionData({
-  abi: VERIFY_ABI,
-  functionName: "verify",
-  args: [frameSig],
-});
-
-const tx = new FrameTx({
-  chainId,
-  nonceKeys,
-  nonceSeq: nonce,
-  sender: account,
-  frames: [
-    new Frame({
-      mode: FrameMode.VERIFY,
-      flags: APPROVE_SCOPE_EXECUTION_AND_PAYMENT,
-      target: account,
-      gasLimit: 200_000,
-      stateGasLimit: KEYED_NONCE_STATE_GAS,
-      data: verifyData,
-    }),
-    senderFrame,
-  ],
-  signatures: [],
-  maxPriorityFee,
-  maxFee,
-});
+const tx = build(frameSig);
 
 const raw = tx.raw();
 console.log(`auth_digest ${digest}`);

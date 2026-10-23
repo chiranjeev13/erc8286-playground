@@ -16,6 +16,7 @@
     "deploy:testnet": "hardhat run scripts/deploy.ts --network hegota-testnet",
     "deploy:pq": "hardhat run scripts/deploy-pq.ts --network hegota",
     "deploy:pq:testnet": "hardhat run scripts/deploy-pq.ts --network hegota-testnet",
+    "deploy:validators:testnet": "hardhat run scripts/deploy-validators.ts --network hegota-testnet",
     "deploy:factory": "hardhat run scripts/deploy-factory.ts --network hegota",
     "deploy:factory:testnet": "hardhat run scripts/deploy-factory.ts --network hegota-testnet",
     "send": "hardhat run scripts/send-frame-tx.ts --network hegota",

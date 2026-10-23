@@ -11,9 +11,9 @@ interface ISphincsVerifier {
 }
 
 /// @notice A hash-based (post-quantum) frame validator. The account approves a frame
-/// transaction when the VERIFY frame carries a SPHINCS signature, by the account's key,
-/// over the same EIP-712 digest the ECDSA validator uses. Nothing on this path depends on
-/// an elliptic curve: forging an approval means breaking keccak256.
+/// transaction when it carries a SPHINCS signature, by the account's key, over `sig_hash`:
+/// the canonical EIP-8141 signing hash, which commits the whole transaction. Nothing on this
+/// path depends on an elliptic curve: forging an approval means breaking keccak256.
 ///
 /// This is the kind of signer EIP-8141 was designed to make possible. The protocol checks
 /// no signature of its own for a frame transaction; the account does, in a VERIFY frame,
@@ -108,9 +108,9 @@ contract SphincsFrameValidator is IFrameValidator {
         _;
     }
 
-    /// @dev `data` is the 6,176-byte SPHINCS signature over `LibFrameTxDigest.digest(account)`.
-    /// The digest binds the sender, nonce, key set and every SENDER frame, exactly as for
-    /// the ECDSA validator, so the two are interchangeable from the account's point of view.
+    /// @dev `data` names an `ARBITRARY` signature entry (see `LibFrameTxDigest.witness`)
+    /// holding the 6,176-byte SPHINCS signature over `sig_hash`. No typed data: there is no
+    /// wallet to show it to, and `sig_hash` already commits everything typed data would.
     function validateFrame(bytes calldata data)
         external
         view
@@ -118,13 +118,13 @@ contract SphincsFrameValidator is IFrameValidator {
         returns (uint8 approvalMode)
     {
         (bytes32 pkSeed, bytes32 pkRoot) = _key();
-        if (pkRoot == bytes32(0) || data.length != SPHINCS_V2_SIG_LEN) return LibERC8286.APPROVE_NONE;
+        bytes memory sig = LibFrameTxDigest.witness(data);
+        if (pkRoot == bytes32(0) || sig.length != SPHINCS_V2_SIG_LEN) return LibERC8286.APPROVE_NONE;
 
         uint8 allowedScope = LibERC8286.allowedScope(LibERC8286.currentFrameIndex());
-        bytes32 message = LibFrameTxDigest.digest(address(this));
 
         // The verifier reverts on malformed input; that is a failed validation, not a bug.
-        try VERIFIER.verify(pkSeed, pkRoot, message, data) returns (bool valid) {
+        try VERIFIER.verify(pkSeed, pkRoot, LibERC8286.sigHash(), sig) returns (bool valid) {
             if (valid) return allowedScope; // account masks this with the frame's allowed scope
         } catch {}
         return LibERC8286.APPROVE_NONE;

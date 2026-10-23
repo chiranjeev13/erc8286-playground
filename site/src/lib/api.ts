@@ -31,8 +31,8 @@ export const ROUTE_HINT = (route: number) => (route === 1 ? "executionRoute() = 
 export type Signer = "wallet" | "pq";
 export const SIGNER_WORD: Record<Signer, string> = { wallet: "Wallet", pq: "Post-quantum key" };
 export const SIGNER_HINT: Record<Signer, string> = {
-  wallet: "ECDSAFrameValidator: secp256k1 ecrecover over the EIP-712 digest, 65-byte signature",
-  pq: "SphincsFrameValidator: SPHINCS (sphincs-g, keccak256 only) over the same EIP-712 digest, 6,176-byte signature, about 389k gas in the VERIFY frame. Verifier: RivaLabs sphincs-g.",
+  wallet: "ECDSAFrameValidator: secp256k1 ecrecover over EIP-712 typed data carrying sig_hash, 65-byte signature in an ARBITRARY signature entry",
+  pq: "SphincsFrameValidator: SPHINCS (sphincs-g, keccak256 only) over sig_hash itself, 6,176-byte signature in an ARBITRARY signature entry, about 389k gas in the VERIFY frame. Verifier: RivaLabs sphincs-g.",
 };
 
 /** What creates a clone account: enough for the factory, or for a deploy frame. */
@@ -72,9 +72,12 @@ export interface Paymaster {
 export interface Prepared {
   nonce: number;
   signer: Signer;
+  /** What a wallet signs: typed data carrying sig_hash beside the SENDER frames. */
   typedData: unknown;
-  /** The EIP-712 hash of typedData: what a post-quantum key signs directly. */
+  /** sig_hash: what a post-quantum key signs directly. */
   digest: string;
+  /** Signed over through sig_hash, so they go back to /send unchanged. */
+  fees: { maxFee: string; maxPriorityFee: string };
 }
 
 export interface Call {

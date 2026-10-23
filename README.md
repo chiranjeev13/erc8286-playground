@@ -17,8 +17,8 @@ SPEC.md           Snapshot of the ERC text
 | Contract | Role |
 |---|---|
 | `ERC8286FrameAccount` | The account: both execution routes, chosen at creation; EIP-8141 `verbatim` opcodes |
-| `ECDSAFrameValidator` | Frame validator (module type `11`) with ECDSA over sender-frame digest |
-| `SphincsFrameValidator` | Post-quantum frame validator: a SPHINCS (hash-based) signature over the same digest |
+| `ECDSAFrameValidator` | Frame validator (module type `11`) with ECDSA over EIP-712 typed data carrying `sig_hash` |
+| `SphincsFrameValidator` | Post-quantum frame validator: a SPHINCS (hash-based) signature over `sig_hash` itself |
 | `ERC8286AccountFactory` | Creates accounts as clones with their configuration in code; usable from a deploy frame |
 | `Paymaster` | Pays for any transaction whose pay frame reaches it; demo only |
 | `IERC8286FrameAccount` / `IFrameValidator` | Spec interfaces |
@@ -87,17 +87,33 @@ subset test: `presentedModeBits() & ~executionModes == 0`.
 The account picks its frame validator from `nonce_keys[0]` — the [EIP-8250](https://eips.ethereum.org/EIPS/eip-8250)
 keyed nonce, read via `TXPARAM(0x10)`. The key set is part of the signed envelope, so
 selection is bound to the transaction: a relayer cannot substitute a different installed
-validator. `ECDSAFrameValidator` reinforces this by committing `nonce_keys_hash`
-(`TXPARAM(0x0E)`) in its digest, so swapping the validator invalidates the signature.
-
-The digest also commits each SENDER frame's `flags` (`FRAMEPARAM(i, 0x03)`), whose bit 2 is
-EIP-8141's `ATOMIC_BATCH_FLAG`. The envelope carries no outer signature, so this digest is
-the only thing binding the frames to the owner: leaving the flag out would let anyone holding
-the raw transaction regroup the batch, turning an all-or-nothing group into frames that
-revert independently (or the reverse). `gas_limit` and the fee fields remain uncommitted.
+validator, and since the owner signs `sig_hash` (below), swapping it invalidates the signature.
 
 There is no fallback: a VERIFY frame whose `nonce_keys[0]` does not encode an address is
 rejected, and the entire VERIFY payload belongs to the validator.
+
+### What the owner signs
+
+The owner's signature rides in the envelope's `signatures` list as one EIP-8141 `ARBITRARY`
+entry with empty `msg`, and the VERIFY frame's payload is only that entry's index,
+`abi.encode(uint256(0))`. EIP-8141 elides such an entry's bytes from the canonical signing
+hash `sig_hash` (`TXPARAM(0x08)`), so the owner can sign over it, and `sig_hash` commits
+everything: every frame verbatim (the VERIFY and paymaster frames, every `gas_limit`, each
+SENDER frame's `flags` with its `ATOMIC_BATCH_FLAG`), the fees, the nonce keys and the shape
+of the signature list. Nobody holding the raw transaction can rewrap the signature with other
+fees or limits, or regroup a batch. The validator reads the entry back with `SIGPARAM` (`0xb4`)
+and `SIGDATACOPY` (`0xb5`) (`LibERC8286.arbitrarySignature`, `LibFrameTxDigest.witness`).
+
+- `SphincsFrameValidator` verifies a SPHINCS signature over `sig_hash` itself.
+- `ECDSAFrameValidator` recovers over EIP-712 typed data,
+  `FrameTx(address sender,uint256 nonce,bytes32 sigHash,Frame[] frames)` under the domain
+  `("ERC-8286 Frame Validator", "2", chainId, account)`: browser wallets refuse to sign a bare
+  32-byte hash, so `sig_hash` travels inside a message whose SENDER frames the wallet can show.
+  The frames are for the person approving; `sigHash` is what binds.
+
+The transaction is built once with an empty entry, its `sig_hash` signed, and rebuilt with the
+signature in the entry; the hash does not move (`witnessSig`, `witnessRef` in
+`scripts/lib/frametx.ts`).
 
 A keyed nonce has its own sequence in the `NONCE_MANAGER` predeploy (`0x…8250`) at
 `keccak256(pad32(sender) || pad32(key))`, independent of the account's linear nonce.
@@ -115,8 +131,8 @@ a quantum-safe signer has to be deployable before the curve is broken, without a
 
 `SphincsFrameValidator` is that signer. It stores `(pkSeed, pkRoot)` in the account's storage
 under its own ERC-7201 slot, and `validateFrame` accepts a 6,176-byte sphincs-g signature
-over `LibFrameTxDigest.digest(account)`, the same EIP-712 message the ECDSA validator
-recovers against. Nothing on the path touches an elliptic curve; forging an approval means
+over `sig_hash`, read from the `ARBITRARY` entry the VERIFY frame names. Nothing on the path
+touches an elliptic curve; forging an approval means
 inverting keccak256. The account does not know which validator it has: `verify()` reads
 `nonce_keys[0]`, delegatecalls, masks the result with the frame's allowed scope and approves.
 
@@ -290,10 +306,11 @@ sender is the account:
 
 ```
 frame[0]  VERIFY (mode 1), target = account, flags 0x03
-          data = abi.encodeCall(verify, r(32) || s(32) || v(1))
+          data = abi.encodeCall(verify, abi.encode(uint256(0)))   # names signatures[0]
 nonce_keys[0] = the validator address
 frame[1]  SENDER (mode 2), target = recipient, value = amount
-signatures = []          # authorization is the account's APPROVE, not an outer signature
+signatures = [[ARBITRARY, signer = empty, msg = empty, r(32) || s(32) || v(1)]]
+          # checked by the account's validator, not the protocol; elided from sig_hash
 ```
 
 It dry-runs through `ethrex_simulateFrameTransaction` first, since `eth_call` cannot
@@ -328,8 +345,8 @@ forge test -vv
 2. Select installed frame validator (module type `11`)
 3. `approvalMode = validateFrame(data) & allowedScope` — the validator reads frame index,
    allowed scope, and frame contents through introspection, never as arguments, and
-   confirms the frame targets its account (`LibERC8286.isTargetedFrame`) and binds the
-   signature to `tx.sender` in the EIP-712 message, so the account may also be only the payer
+   confirms the frame targets its account (`LibERC8286.isTargetedFrame`); the signature covers
+   `sig_hash`, which binds `tx.sender`, so the account may also be only the payer
 4. If execution bit set and any presented `SENDER` frame mode is unsupported → clear execution bit
 5. If execution bit set, the account is contract-dispatched, and any `SENDER` frame resolves
    to another target → clear execution bit

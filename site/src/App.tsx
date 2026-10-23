@@ -157,21 +157,17 @@ export function App() {
     setView("result");
     setSending(true);
     try {
-      const prep = await api<Prepared>("/api/pg/prepare", { account: account.address, frames: wire, clone: account.clone });
-      // A wallet signs the typed data; a post-quantum key signs its hash, right here in the browser.
+      // Scope, payer and fees are all inside sig_hash now, so /prepare fixes them and /send
+      // must get the same ones back.
+      const plan = { account: account.address, verify, frames: wire, clone: account.clone, payer: payer?.address ?? null };
+      const prep = await api<Prepared>("/api/pg/prepare", plan);
+      // A wallet signs typed data carrying sig_hash; a post-quantum key signs sig_hash itself,
+      // right here in the browser.
       const t0 = performance.now();
       const signature = signer === "pq" ? await pqSign(findPqKey(account.owner)!, prep.digest) : await signTypedData(wallet!, prep.typedData);
       patchRun(run.id, { signature: { hex: signature, pq: signer === "pq", ms: signer === "pq" ? performance.now() - t0 : undefined } });
       patchRun(run.id, { status: "simulating" });
-      const out = await api<{ sim: Sim; hash: string | null; gasLimits?: number[] }>("/api/pg/send", {
-        account: account.address,
-        verify,
-        frames: wire,
-        signature,
-        nonce: prep.nonce,
-        clone: account.clone,
-        payer: payer?.address ?? null,
-      });
+      const out = await api<{ sim: Sim; hash: string | null; gasLimits?: number[] }>("/api/pg/send", { ...plan, signature, nonce: prep.nonce, fees: prep.fees });
       if (!out.sim.valid || !out.hash) {
         patchRun(run.id, { status: "refused", message: out.sim.violation ?? "invalid" });
         toastManager.add({ type: "error", title: "Refused by the node", description: out.sim.violation ?? "invalid" });

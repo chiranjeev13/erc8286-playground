@@ -156,7 +156,8 @@ library LibERC8286 {
     }
 
     /// @dev `TXPARAM(0x08)`: the canonical signing hash. Commits frame data verbatim, so a
-    /// signature carried in frame data cannot sign over it.
+    /// signature carried in frame data cannot sign over it; one in an `ARBITRARY` signature
+    /// entry with empty `msg` can, since those bytes are elided.
     function sigHash() internal view returns (bytes32 result) {
         assembly {
             result := txparam(0x08)
@@ -217,6 +218,42 @@ library LibERC8286 {
         uint256 key = nonceKey0();
         if (key == 0 || key >> 160 != 0) return address(0);
         return address(uint160(key));
+    }
+
+    /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
+    /*                  SIGNATURE INTROSPECTION                   */
+    /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
+
+    /// @dev EIP-8141 `ARBITRARY` signature scheme: bytes the protocol does not check, left to
+    /// a contract. An entry with empty `msg` has its bytes elided from `sig_hash`.
+    uint256 internal constant SIG_SCHEME_ARBITRARY = 0x0;
+
+    /// @dev `TXPARAM(0x0B)`: `len(tx.signatures)`.
+    function signatureCount() internal view returns (uint256 result) {
+        assembly {
+            result := txparam(0x0b)
+        }
+    }
+
+    /// @dev `SIGPARAM(i, 0x01)`: entry `i`'s scheme. Halts if `i` is out of range.
+    function signatureScheme(uint256 i) internal view returns (uint256 result) {
+        assembly {
+            result := sigparam(i, 0x01)
+        }
+    }
+
+    /// @dev The raw bytes of `ARBITRARY` entry `i`, by `SIGPARAM(i, 0x03)` and `SIGDATACOPY`.
+    /// Empty if `i` is out of range or names another scheme, where the opcodes would halt.
+    function arbitrarySignature(uint256 i) internal view returns (bytes memory sig) {
+        if (i >= signatureCount() || signatureScheme(i) != SIG_SCHEME_ARBITRARY) return sig;
+        uint256 len;
+        assembly {
+            len := sigparam(i, 0x03)
+        }
+        sig = new bytes(len);
+        assembly ("memory-safe") {
+            sigdatacopy(add(sig, 0x20), 0, len, i)
+        }
     }
 
     /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/

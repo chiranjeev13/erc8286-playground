@@ -1,5 +1,6 @@
 // The visitor's wallet, through the injected EIP-1193 provider. Used for two things only:
-// giving an address to own a new account, and signing the EIP-712 typed data for a send.
+// giving an address to own a new account, and signing the EIP-712 typed data (carrying the
+// transaction's sig_hash) for a send.
 // The wallet never pays gas: the account pays for its own frame transaction.
 
 import { DORA } from "./api";

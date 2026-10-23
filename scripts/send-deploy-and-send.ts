@@ -17,8 +17,8 @@
 // the counterfactual address with 0.01 ETH, since the account pays for its own creation. The
 // wallet is the deployer key; a pq variant generates a fresh SPHINCS key. DEPLOY_GAS,
 // DEPLOY_STATE, VERIFY_GAS and PAY_GAS override the declared limits.
-import { encodeAbiParameters, encodeFunctionData, encodePacked, getAddress, keccak256, numberToHex, parseEther, toHex } from "viem";
-import { Frame, FrameMode, FrameTx, KEYED_NONCE_STATE_GAS, authDigest, nonceManagerFor, nonceSlot } from "./lib/frametx.js";
+import { encodeAbiParameters, encodeFunctionData, encodePacked, getAddress, keccak256, numberToHex, parseEther, toHex, type Hex } from "viem";
+import { Frame, FrameMode, FrameTx, KEYED_NONCE_STATE_GAS, authDigest, nonceManagerFor, nonceSlot, witnessRef, witnessSig } from "./lib/frametx.js";
 import { connect, need, simulate, type TypedReceipt } from "./lib/connect.js";
 import { keyFromSecret, randomSecret, sign } from "../site/src/lib/pq/sphincs.mjs";
 
@@ -60,22 +60,23 @@ const block = await client.getBlock();
 const maxFee = (block.baseFeePerGas ?? 0n) * 2n + 1_000_000_000n;
 const senderFrames = [new Frame({ mode: FrameMode.SENDER, target: "0x000000000000000000000000000000000000dEaD", gasLimit: 30_000, stateGasLimit: 200_000, value: parseEther("0.0001") })];
 
-const digest = authDigest({ chainId, nonce, sender, account: sender, nonceKeys, senderFrames });
-const sig = pq ? sign(key!, digest) : await owner.sign({ hash: digest });
-
 const deployGas = n("DEPLOY_GAS", 30_000);
 const deployState = n("DEPLOY_STATE", pq ? 340_000 : 320_000);
 const verifyGas = n("VERIFY_GAS", pq ? 455_000 : 100_000);
 const payGas = n("PAY_GAS", 15_000);
-const tx = new FrameTx({
-  chainId, nonceKeys, nonceSeq: nonce, sender, signatures: [], maxPriorityFee: 1_000_000_000n, maxFee,
+// Built once without the signature, whose ARBITRARY entry sig_hash elides, then signed and
+// rebuilt with it. A SPHINCS key signs sig_hash itself; a wallet, the typed data around it.
+const build = (sig?: Hex) => new FrameTx({
+  chainId, nonceKeys, nonceSeq: nonce, sender, signatures: [witnessSig(sig)], maxPriorityFee: 1_000_000_000n, maxFee,
   frames: [
     new Frame({ mode: FrameMode.DEFAULT, flags: 0, target: factory, gasLimit: deployGas, stateGasLimit: deployState, data: encodeFunctionData({ abi: FACTORY_ABI, functionName: "createAccount", args: [impl, args, salt] }) }),
-    new Frame({ mode: FrameMode.VERIFY, flags: scopes, target: sender, gasLimit: verifyGas, stateGasLimit: payer ? 0 : KEYED_NONCE_STATE_GAS, data: encodeFunctionData({ abi: VERIFY_ABI, functionName: "verify", args: [sig] }) }),
+    new Frame({ mode: FrameMode.VERIFY, flags: scopes, target: sender, gasLimit: verifyGas, stateGasLimit: payer ? 0 : KEYED_NONCE_STATE_GAS, data: encodeFunctionData({ abi: VERIFY_ABI, functionName: "verify", args: [witnessRef()] }) }),
     ...(payer ? [new Frame({ mode: FrameMode.VERIFY, flags: 1, target: paymaster, gasLimit: payGas, stateGasLimit: KEYED_NONCE_STATE_GAS, data: encodeFunctionData({ abi: PAY_ABI, functionName: "pay" }) })] : []),
     ...senderFrames,
   ],
 });
+const unsigned = build();
+const tx = build(pq ? sign(key!, unsigned.sigHash()) : await owner.sign({ hash: authDigest(unsigned) }));
 console.log(`prefix limits: gas ${deployGas + verifyGas + (payer ? payGas : 0)}  state ${deployState + KEYED_NONCE_STATE_GAS}`);
 const raw = tx.raw();
 const sim = await simulate(client, raw);

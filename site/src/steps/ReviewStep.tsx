@@ -54,7 +54,7 @@ export function ReviewStep({ account, verify, frames, payer, signer, sending, on
         <CardHeader>
           <CardTitle>Frames</CardTitle>
           <CardDescription>
-            <Hint text="One EIP-8141 type-0x06 transaction; nonce_keys = [validator]; no outer signatures.">In order.</Hint>
+            <Hint text="One EIP-8141 type-0x06 transaction; nonce_keys = [validator]; the owner's signature in one ARBITRARY signature entry, over sig_hash.">In order.</Hint>
           </CardDescription>
         </CardHeader>
         <CardPanel>

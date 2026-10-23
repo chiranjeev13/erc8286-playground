@@ -84,9 +84,10 @@ contract ECDSAFrameValidator is IFrameValidator {
         // Read the executing frame's allowance rather than trusting a supplied value.
         uint8 allowedScope = LibERC8286.allowedScope(LibERC8286.currentFrameIndex());
 
-        // The message binds the sender, so a signature given for this account's own
-        // transaction cannot be replayed to make it pay for another account's.
-        address signer = LibFrameTxDigest.recover(address(this), data);
+        // `data` names the signature entry; the message carries sig_hash, which binds the
+        // sender, so a signature given for this account's own transaction cannot be replayed
+        // to make it pay for another account's.
+        address signer = LibFrameTxDigest.recover(address(this), LibFrameTxDigest.witness(data));
         if (signer != address(0) && signer == owner) {
             return allowedScope; // account masks this with the frame's allowed scope
         }

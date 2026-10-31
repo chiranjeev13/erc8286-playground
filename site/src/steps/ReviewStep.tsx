@@ -1,4 +1,3 @@
-import { Wallet } from "lucide-react";
 import { CopyAddress } from "@/components/CopyAddress";
 import { Hint } from "@/components/Hint";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -13,16 +12,14 @@ interface Props {
   verify: VerifySpec;
   frames: FrameSpec[];
   payer: Paymaster | null;
-  /** wallet: the connected wallet owns the account. pq: a post-quantum key in this browser does.
-   * other: whoever owns it is not here. */
-  signer: "wallet" | "pq" | "other";
+  /** This browser holds the post-quantum key that owns the account. */
+  canSign: boolean;
   sending: boolean;
-  onConnect: () => void;
   onBack: () => void;
   onSend: () => void;
 }
 
-export function ReviewStep({ account, verify, frames, payer, signer, sending, onConnect, onBack, onSend }: Props) {
+export function ReviewStep({ account, verify, frames, payer, canSign, sending, onBack, onSend }: Props) {
   const exp = expectation(account, verify, frames, payer);
   const title = { success: "Should go through", warning: "Should go through, with a failed frame", error: "Will be refused" }[exp.tone];
   const base = account.deployed ? 0 : 1;
@@ -36,8 +33,8 @@ export function ReviewStep({ account, verify, frames, payer, signer, sending, on
           <CardDescription><CopyAddress address={account.address} full /></CardDescription>
         </CardHeader>
         <CardPanel className="flex flex-wrap gap-1.5">
-          <Hint text={SIGNER_HINT[account.signer]}>
-            <Badge variant="info">{account.signer === "pq" ? "post-quantum key" : "owner"} {short(account.owner)}</Badge>
+          <Hint text={SIGNER_HINT}>
+            <Badge variant="info">post-quantum key {short(account.owner)}</Badge>
           </Hint>
           <Badge variant="secondary">{ROUTE_WORD(account.route).toLowerCase()}</Badge>
           <Badge variant={account.scopes & 1 ? "success" : "outline"} className={account.scopes & 1 ? "" : "line-through opacity-60"}>pays gas</Badge>
@@ -85,8 +82,8 @@ export function ReviewStep({ account, verify, frames, payer, signer, sending, on
                 <TableCell><Badge variant="info">VERIFY</Badge></TableCell>
                 <TableCell className="text-xs"><CopyAddress address={account.address} /></TableCell>
                 <TableCell>
-                  <Hint text={`${SCOPE_HINT[verify.scope]}; ${SIGNER_HINT[account.signer]}${verify.tamper ? "; tampered signature" : ""}`}>
-                    Approval: {SCOPE_WORD[verify.scope].toLowerCase()}{account.signer === "pq" ? ", post-quantum signature" : ""}{verify.tamper ? ", broken signature" : ""}
+                  <Hint text={`${SCOPE_HINT[verify.scope]}; ${SIGNER_HINT}${verify.tamper ? "; tampered signature" : ""}`}>
+                    Approval: {SCOPE_WORD[verify.scope].toLowerCase()}, post-quantum signature{verify.tamper ? ", broken signature" : ""}
                   </Hint>
                 </TableCell>
                 <TableCell className="text-end">-</TableCell>
@@ -134,10 +131,10 @@ export function ReviewStep({ account, verify, frames, payer, signer, sending, on
         <AlertDescription>{exp.text}</AlertDescription>
       </Alert>
 
-      {signer === "other" && (
+      {!canSign && (
         <Alert variant="warning">
-          <AlertTitle>This account belongs to {account.signer === "pq" ? "post-quantum key" : ""} {short(account.owner)}</AlertTitle>
-          <AlertDescription>{account.signer === "pq" ? "That key is not in this browser, so nothing here can sign for it. Pick another account." : "Connect that wallet to sign for it, or pick another account."}</AlertDescription>
+          <AlertTitle>This account belongs to post-quantum key {short(account.owner)}</AlertTitle>
+          <AlertDescription>That key is not in this browser, so nothing here can sign for it. Pick another account.</AlertDescription>
         </Alert>
       )}
 
@@ -146,15 +143,9 @@ export function ReviewStep({ account, verify, frames, payer, signer, sending, on
           <Button variant="ghost" onClick={onBack}>
             Back
           </Button>
-          {signer === "other" && account.signer === "wallet" ? (
-            <Button size="lg" variant="outline" onClick={onConnect}>
-              <Wallet /> Connect wallet
-            </Button>
-          ) : (
-            <Button size="lg" onClick={onSend} loading={sending} disabled={signer === "other"}>
-              {signer === "pq" ? "Sign with the post-quantum key and send" : "Sign and send"}
-            </Button>
-          )}
+          <Button size="lg" onClick={onSend} loading={sending} disabled={!canSign}>
+            Sign with the post-quantum key and send
+          </Button>
         </CardFooter>
       </Card>
     </div>

@@ -42,8 +42,7 @@ const ECDSA_BYTES = 65;
 
 export interface SignatureInfo {
   hex: string;
-  pq: boolean;
-  /** Milliseconds spent signing, when measured (post-quantum keys only; a wallet's time is the person's). */
+  /** Milliseconds spent signing in this browser. */
   ms?: number;
 }
 
@@ -51,7 +50,6 @@ export interface SignatureInfo {
 export function SignatureView({ sig }: { sig: SignatureInfo }) {
   const [copied, setCopied] = useState(false);
   const bytes = (sig.hex.length - 2) / 2;
-  const segments = sig.pq ? PQ_SEGMENTS : ECDSA_SEGMENTS;
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(sig.hex);
@@ -65,29 +63,25 @@ export function SignatureView({ sig }: { sig: SignatureInfo }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{sig.pq ? "The post-quantum signature" : "The signature"}</CardTitle>
+        <CardTitle>The post-quantum signature</CardTitle>
         <CardDescription>
-          {sig.pq ? (
-            <Hint text="sphincs-g, hash-based. The validator recomputes the FORS roots and walks the hypertree back up to pkRoot: about 389k gas of keccak256.">
-              {bytes.toLocaleString("en-US")} bytes, {Math.round(PQ_BYTES / ECDSA_BYTES)} times an ECDSA signature. It is nothing but hashes and the preimages that open them.
-            </Hint>
-          ) : (
-            <Hint text="secp256k1, recovered with ecrecover in the validator">{bytes} bytes: r, s and a recovery id.</Hint>
-          )}
+          <Hint text="sphincs-g, hash-based. The validator recomputes the FORS roots and walks the hypertree back up to pkRoot: about 389k gas of keccak256.">
+            {bytes.toLocaleString("en-US")} bytes, {Math.round(PQ_BYTES / ECDSA_BYTES)} times an ECDSA signature. It is nothing but hashes and the preimages that open them.
+          </Hint>
           {sig.ms !== undefined && <> Signed in this browser in {Math.round(sig.ms).toLocaleString("en-US")} ms.</>}
         </CardDescription>
       </CardHeader>
       <CardPanel className="flex flex-col gap-4">
         <div className="flex flex-col gap-2">
-          <ByteBar segments={sig.pq ? PQ_SEGMENTS : ECDSA_SEGMENTS} total={PQ_BYTES} label={sig.pq ? "This signature" : "This signature, to the same scale"} />
-          {sig.pq && <ByteBar segments={ECDSA_SEGMENTS} total={PQ_BYTES} label="An ECDSA signature, to the same scale" />}
+          <ByteBar segments={PQ_SEGMENTS} total={PQ_BYTES} label="This signature" />
+          <ByteBar segments={ECDSA_SEGMENTS} total={PQ_BYTES} label="An ECDSA signature, to the same scale" />
         </div>
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-          {(sig.pq ? [PQ_SEGMENTS[0]!, PQ_SEGMENTS[1]!, PQ_SEGMENTS[20]!] : segments).map((s) => (
+          {[PQ_SEGMENTS[0]!, PQ_SEGMENTS[1]!, PQ_SEGMENTS[20]!].map((s) => (
             <span key={s.name} className="inline-flex items-center gap-1.5">
               <span className={`inline-block size-2.5 rounded-sm ${s.color}`} />
               <Hint text={s.hint}>
-                {sig.pq && s.name.startsWith("FORS") ? "19 FORS trees, 160 bytes each" : sig.pq && s.name.startsWith("Layer") ? "5 hypertree layers, 624 bytes each" : `${s.name}, ${s.bytes} byte${s.bytes > 1 ? "s" : ""}`}
+                {s.name.startsWith("FORS") ? "19 FORS trees, 160 bytes each" : s.name.startsWith("Layer") ? "5 hypertree layers, 624 bytes each" : `${s.name}, ${s.bytes} byte${s.bytes > 1 ? "s" : ""}`}
               </Hint>
             </span>
           ))}

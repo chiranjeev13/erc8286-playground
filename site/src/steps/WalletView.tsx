@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowUpRight, Droplet, KeyRound, Plus, RefreshCw, Send, Settings, Wallet } from "lucide-react";
+import { ArrowUpRight, Droplet, KeyRound, Plus, RefreshCw, Send, Settings } from "lucide-react";
 import { Activity } from "@/components/Activity";
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { CopyAddress } from "@/components/CopyAddress";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardPanel, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
-import { DORA, ethStr, short, FAUCET, MODES, MODE_HINT, MODE_WORD, ROUTE_HINT, ROUTE_WORD, SIGNER_HINT, SIGNER_WORD, type Account } from "@/lib/api";
+import { DORA, ethStr, short, FAUCET, MODES, MODE_HINT, MODE_WORD, ROUTE_HINT, ROUTE_WORD, SIGNER_HINT, type Account } from "@/lib/api";
 import type { PqKey } from "@/lib/pq";
 import type { Run } from "@/steps/ResultStep";
 
@@ -99,7 +99,7 @@ export function WalletView({ accounts, active, loading, runs, keys, onSelect, on
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-mono text-sm">{short(a.address)}</span>
                   <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                    {a.signer === "pq" ? <KeyRound className="size-3" /> : <Wallet className="size-3" />}
+                    <KeyRound className="size-3" />
                     {a.stale ? "outdated" : !a.deployed ? "not created yet" : `${a.nonce} sent`}
                   </span>
                 </span>
@@ -134,7 +134,7 @@ export function WalletView({ accounts, active, loading, runs, keys, onSelect, on
                 <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-3 text-sm">
                   <dt className="text-muted-foreground">Owner</dt>
                   <dd className="flex flex-wrap items-center gap-2">
-                    <Hint text={SIGNER_HINT[account.signer]}>{SIGNER_WORD[account.signer]}</Hint>
+                    <Hint text={SIGNER_HINT}>Post-quantum key</Hint>
                     <CopyAddress address={account.owner} className="text-xs text-muted-foreground" />
                   </dd>
                   <dt className="text-muted-foreground">Calls</dt>
@@ -173,8 +173,7 @@ export function WalletView({ accounts, active, loading, runs, keys, onSelect, on
         )}
       </div>
 
-      {/* Keys matter only to an account a post-quantum key signs for; a wallet holds its own. */}
-      {account?.signer === "pq" && <PqKeys keys={keys} accounts={accounts} />}
+      {keys.length > 0 && <PqKeys keys={keys} accounts={accounts} />}
     </div>
   );
 }
@@ -200,8 +199,8 @@ function WalletCard({ account, onRefresh }: { account: Account; onRefresh: (addr
           <AccountAvatar address={account.address} className="size-5" />
           <span className="text-sm font-medium text-white/80">ERC-8286 account</span>
           <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2 py-0.5 text-xs ring-1 ring-white/15">
-            {account.signer === "pq" ? <KeyRound className="size-3" /> : <Wallet className="size-3" />}
-            {account.signer === "pq" ? "post-quantum" : "wallet"}
+            <KeyRound className="size-3" />
+            post-quantum
           </span>
           {!account.deployed && (
             <Hint text="No code at this address yet. The first transaction carries a deploy frame that creates it.">

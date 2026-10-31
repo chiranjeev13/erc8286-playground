@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { ArrowRightLeft, KeyRound, Route, Wallet } from "lucide-react";
+import { ArrowRightLeft, KeyRound, Route } from "lucide-react";
 import { CopyAddress } from "@/components/CopyAddress";
 import { Hint } from "@/components/Hint";
 import { PermissionBoxes, ShapeBoxes } from "@/components/PolicyBoxes";
@@ -11,18 +11,14 @@ import { Card, CardDescription, CardFooter, CardHeader, CardPanel, CardTitle } f
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Label } from "@/components/ui/label";
 import { Radio, RadioGroup } from "@/components/ui/radio-group";
-import { api, MODES, MODE_WORD, ROUTE_WORD, SIGNER_HINT, SIGNER_WORD, type Account, type ModeName, type Signer } from "@/lib/api";
+import { api, MODES, MODE_WORD, ROUTE_WORD, SIGNER_HINT, type Account, type ModeName } from "@/lib/api";
 import { createPqKey, type PqKey } from "@/lib/pq";
-import { hasWallet } from "@/lib/wallet";
 
 const STEPS = ["Owner", "Calls", "Permissions", "Review"] as const;
 
 interface Props {
-  wallet: string | null;
   /** Post-quantum keys kept in this browser. */
   keys: PqKey[];
-  connecting: boolean;
-  onConnect: () => void;
   onDeployed: (a: Account) => void;
   /** Leave the wizard without creating anything; absent when there is nowhere to go back to. */
   onCancel?: () => void;
@@ -46,9 +42,8 @@ function Option({ value, icon, title, hint, children }: { value: string; icon: R
 
 /** Creating an account, one decision per step. The address is reserved at the end; the
  * account itself is created by its first transaction. */
-export function CreateStep({ wallet, keys, connecting, onConnect, onDeployed, onCancel }: Props) {
+export function CreateStep({ keys, onDeployed, onCancel }: Props) {
   const [step, setStep] = useState(0);
-  const [signer, setSigner] = useState<Signer>("wallet");
   const [keyRoot, setKeyRoot] = useState<string | null>(null);
   const key = keys.find((k) => k.pkRoot === keyRoot) ?? keys[0] ?? null;
   const [route, setRoute] = useState<"0" | "1">("0");
@@ -57,7 +52,7 @@ export function CreateStep({ wallet, keys, connecting, onConnect, onDeployed, on
   const [deploying, setDeploying] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const owner = signer === "wallet" ? wallet : (key?.pkRoot ?? null);
+  const owner = key?.pkRoot ?? null;
   const ready = [owner !== null, true, scopes.length > 0 && modes.length > 0, true];
 
   const deploy = async () => {
@@ -65,7 +60,7 @@ export function CreateStep({ wallet, keys, connecting, onConnect, onDeployed, on
     setError(null);
     try {
       const body = { route: Number(route), scopes: scopes.reduce((n, s) => n | Number(s), 0), modes };
-      onDeployed(await api<Account>("/api/pg/deploy", signer === "pq" ? { ...body, signer, pkSeed: key?.pkSeed, pkRoot: key?.pkRoot } : { ...body, signer, owner: wallet }));
+      onDeployed(await api<Account>("/api/pg/deploy", { ...body, pkSeed: key?.pkSeed, pkRoot: key?.pkRoot }));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -75,7 +70,7 @@ export function CreateStep({ wallet, keys, connecting, onConnect, onDeployed, on
 
   const title = ["Who signs for it", "How calls run", "What it may do", "Check and create"][step];
   const description = [
-    "Every transaction the account sends carries this owner's signature.",
+    "A SPHINCS key made in this browser. Every transaction the account sends carries its signature, and no quantum computer can forge it.",
     "Fixed at creation. Decides whether the account's own code sees every call.",
     "You can change these later, with a transaction the account sends to itself.",
     "The address is reserved now. The account is created by its first transaction.",
@@ -92,28 +87,11 @@ export function CreateStep({ wallet, keys, connecting, onConnect, onDeployed, on
         <CardPanel className="flex flex-col gap-6">
           {step === 0 && (
             <>
-              <RadioGroup value={signer} onValueChange={(v) => setSigner(v as Signer)} className="grid gap-3 sm:grid-cols-2">
-                <Option value="wallet" icon={<Wallet />} title="Your wallet" hint={`${SIGNER_HINT.wallet}. The wallet approves transactions and never pays gas.`}>
-                  MetaMask or any browser wallet signs each transaction.
-                </Option>
-                <Option value="pq" icon={<KeyRound />} title="A post-quantum key" hint={`${SIGNER_HINT.pq}. Made in this browser; no elliptic curve anywhere, so breaking it means breaking keccak256.`}>
-                  A SPHINCS key made in this browser. Safe from quantum computers.
-                </Option>
-              </RadioGroup>
-              {signer === "wallet" ? (
-                wallet ? (
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    Owner
-                    <Badge variant="info">
-                      <Wallet /> <CopyAddress address={wallet} />
-                    </Badge>
-                  </div>
-                ) : (
-                  <Button variant="outline" className="self-start" onClick={onConnect} loading={connecting} disabled={!hasWallet()}>
-                    <Wallet /> {hasWallet() ? "Connect wallet to own the account" : "No wallet found"}
-                  </Button>
-                )
-              ) : keys.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                <Hint text={`${SIGNER_HINT}. No elliptic curve anywhere, so breaking it means breaking keccak256.`}>Hash-based, checked by the account itself in its VERIFY frame.</Hint>{" "}
+                The key never leaves this browser and never pays gas.
+              </p>
+              {keys.length === 0 ? (
                 <Button variant="outline" className="self-start" onClick={() => setKeyRoot(createPqKey().pkRoot)}>
                   <KeyRound /> Generate a post-quantum key
                 </Button>
@@ -166,7 +144,7 @@ export function CreateStep({ wallet, keys, connecting, onConnect, onDeployed, on
             <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-3 text-sm">
               <dt className="text-muted-foreground">Owner</dt>
               <dd className="flex flex-wrap items-center gap-2">
-                {SIGNER_WORD[signer]} {owner && <CopyAddress address={owner} />}
+                Post-quantum key {owner && <CopyAddress address={owner} />}
               </dd>
               <dt className="text-muted-foreground">Calls</dt>
               <dd>{ROUTE_WORD(Number(route))}</dd>

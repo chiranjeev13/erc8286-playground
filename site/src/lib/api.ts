@@ -27,13 +27,9 @@ export const MODE_HINT: Record<ModeName, string> = {
 export const ROUTE_WORD = (route: number) => (route === 1 ? "Calls go through the account" : "Calls run directly");
 export const ROUTE_HINT = (route: number) => (route === 1 ? "executionRoute() = 0x01 contract: every SENDER frame calls execute()" : "executionRoute() = 0x00 protocol: SENDER frames call their targets");
 
-/** How an account is signed for: an ECDSA wallet, or a post-quantum (SPHINCS) key kept in this browser. */
-export type Signer = "wallet" | "pq";
-export const SIGNER_WORD: Record<Signer, string> = { wallet: "Wallet", pq: "Post-quantum key" };
-export const SIGNER_HINT: Record<Signer, string> = {
-  wallet: "ECDSAFrameValidator: secp256k1 ecrecover over EIP-712 typed data carrying sig_hash, 65-byte signature in an ARBITRARY signature entry",
-  pq: "SphincsFrameValidator: SPHINCS (sphincs-g, keccak256 only) over sig_hash itself, 6,176-byte signature in an ARBITRARY signature entry, about 389k gas in the VERIFY frame. Verifier: RivaLabs sphincs-g.",
-};
+/** How every playground account is signed for: a post-quantum (SPHINCS) key kept in this browser. */
+export const SIGNER_HINT =
+  "SphincsFrameValidator: SPHINCS (sphincs-g, keccak256 only) over sig_hash itself, 6,176-byte signature in an ARBITRARY signature entry, about 389k gas in the VERIFY frame. Verifier: RivaLabs sphincs-g.";
 
 /** What creates a clone account: enough for the factory, or for a deploy frame. */
 export interface CloneSpec {
@@ -48,11 +44,10 @@ export interface Account {
   clone: CloneSpec | null;
   balance: string;
   nonce: number;
-  signer: Signer;
-  /** The wallet that signs for this account, or the public key (pkRoot) of its post-quantum key. */
+  /** The public key (pkRoot) of the post-quantum key that signs for this account. */
   owner: string;
   pkSeed: string | null;
-  /** Deployed with an earlier validator; cannot be used from this playground. */
+  /** Configured for a validator this playground does not sign for; cannot be used here. */
   stale: boolean;
   /** False until its first transaction, which carries a deploy frame that creates it. */
   deployed: boolean;
@@ -71,10 +66,7 @@ export interface Paymaster {
 
 export interface Prepared {
   nonce: number;
-  signer: Signer;
-  /** What a wallet signs: typed data carrying sig_hash beside the SENDER frames. */
-  typedData: unknown;
-  /** sig_hash: what a post-quantum key signs directly. */
+  /** sig_hash: what the post-quantum key signs. */
   digest: string;
   /** Signed over through sig_hash, so they go back to /send unchanged. */
   fees: { maxFee: string; maxPriorityFee: string };
@@ -105,8 +97,8 @@ export interface VerifySpec {
 export interface Info {
   chainId: number;
   rpc: string;
+  /** SphincsFrameValidator. */
   validator: string;
-  pqValidator: string | null;
   factory: string;
   paymaster: string;
   head: string;

@@ -1,21 +1,19 @@
 // Playground API, served by the Vite dev/preview server.
 //
 //   GET  /api/pg/info                  validators, factory, paymaster, head
-//   POST /api/pg/deploy                { route, scopes, modes, owner | pkSeed+pkRoot } -> a reserved address; the first tx creates the account
-//   GET  /api/pg/account?address=0x..  that account's live config, owner and balance
-//   GET  /api/pg/accounts?owner=a,b    every account this playground deployed for those owners
-//                                      (wallet addresses, or SPHINCS pkRoots for post-quantum accounts)
+//   POST /api/pg/deploy                { route, scopes, modes, pkSeed, pkRoot } -> a reserved address; the first tx creates the account
+//   GET  /api/pg/account?address=0x..  that account's live config, owner (pkRoot) and balance
 //   GET  /api/pg/paymaster             the common Paymaster (address, balance, low); pays for whatever reaches it
-//   POST /api/pg/prepare               { account, verify, frames, payer? } -> nonce, fees, and what the owner signs:
-//                                      sig_hash for a post-quantum key, typed data carrying it for a wallet
+//   POST /api/pg/prepare               { account, verify, frames, payer? } -> nonce, fees, and sig_hash, which the key signs
 //   POST /api/pg/send                  { account, verify, frames, payer?, nonce, fees, signature } -> simulate, submit
 //   GET  /api/pg/receipt?hash=0x..     the type-0x06 receipt, or null
 //   GET  /api/pg/history?address=0x..  the account's transactions, newest first: blocks from the explorer, transactions from the node
 //
-// Accounts are ERC8286FrameAccount clones on ethrex's
-// Hegota testnet (chain 8141), each owned by a visitor's wallet. The browser signs the typed
-// data from /prepare and passes the signature to /send, which puts it in an EIP-8141 ARBITRARY
-// signature entry; this server never signs for an account.
+// Accounts are ERC8286FrameAccount clones on ethrex's Hegota testnet (chain 8141), each owned
+// by a post-quantum (SPHINCS) key made in the visitor's browser and checked by
+// SphincsFrameValidator. The browser signs sig_hash from /prepare and passes the signature to
+// /send, which puts it in an EIP-8141 ARBITRARY signature entry; this server never signs for
+// an account.
 // A Paymaster pays for an account that only approves execution; it checks nothing.
 
 import { existsSync, readFileSync } from "node:fs";
@@ -43,7 +41,6 @@ import {
   FrameMode,
   FrameTx,
   KEYED_NONCE_STATE_GAS,
-  authTypedData,
   nonceManagerFor,
   nonceSlot,
   witnessRef,
@@ -56,8 +53,6 @@ const ATOMIC_FLAG = 0x04;
 /** Below this the paymaster is reported as running low; a person refills it at the faucet. */
 const PAYMASTER_LOW = parseEther("0.02");
 const MODE_BATCH = "0x0100000000000000000000000000000000000000000000000000000000000000" as const;
-/** ECDSAFrameValidator's ERC-7201 slot: the owner lives here, in the account's storage. */
-const OWNER_SLOT = "0x27aa2c0bccf1b67327dd8bf7c4c5cb600687106028be01b120c11c42f5ff9d00" as const;
 /** SphincsFrameValidator's ERC-7201 slot: pkSeed here, pkRoot in the next slot. */
 const PQ_SLOT = "0x13be87145d8918acf8bd0fe085758eda945ae7d6045ca14ce964e4eef4fbcf00" as const;
 const PQ_ROOT_SLOT = "0x13be87145d8918acf8bd0fe085758eda945ae7d6045ca14ce964e4eef4fbcf01" as const;
@@ -65,13 +60,12 @@ const PQ_ROOT_SLOT = "0x13be87145d8918acf8bd0fe085758eda945ae7d6045ca14ce964e4ee
 const SPHINCS_SIG_LEN = 6176;
 // The validation prefix (deploy frame, VERIFY, pay frame) may declare at most 500k gas and
 // 500k state gas in total. Measured on Hegota: a SPHINCS VERIFY frame uses about 402k gas,
-// an ECDSA one about 35k, the pay frame 10k, the deploy frame 23k. The nonce slot takes
-// 97,920 state gas; a clone deploy 316,710 (wallet) or 335,070 (post-quantum).
-// The open paymaster's pay frame checks nothing and costs about 5k.
-const VERIFY_GAS: Record<Signer, number> = { wallet: 50_000, pq: 455_000 };
+// the pay frame 10k, the deploy frame 23k. The nonce slot takes 97,920 state gas, a clone
+// deploy 335,070. The open paymaster's pay frame checks nothing and costs about 5k.
+const VERIFY_GAS = 455_000;
 const PAY_GAS = 15_000;
 const DEPLOY_GAS = 25_000;
-const DEPLOY_STATE_GAS: Record<Signer, number> = { wallet: 320_000, pq: 340_000 };
+const DEPLOY_STATE_GAS = 340_000;
 /** EIP-1167 runtime prefix; the configuration follows the 45-byte clone (LibCloneConfig). */
 const CLONE_PREFIX = "0x363d3d373d3d3d363d73";
 const CLONE_CODE_LEN = 45;
@@ -80,9 +74,6 @@ const FACTORY_ABI = [
   { type: "function", name: "createAccount", inputs: [{ type: "address" }, { type: "bytes" }, { type: "bytes32" }], outputs: [{ type: "address" }], stateMutability: "nonpayable" },
   { type: "function", name: "predict", inputs: [{ type: "address" }, { type: "bytes" }, { type: "bytes32" }], outputs: [{ type: "address" }], stateMutability: "view" },
 ] as const;
-
-/** How an account is signed for: an ECDSA wallet, or a post-quantum (SPHINCS) key in the browser. */
-type Signer = "wallet" | "pq";
 
 const VERIFY_ABI = [{ type: "function", name: "verify", inputs: [{ type: "bytes" }], outputs: [] }] as const;
 const PAY_ABI = [{ type: "function", name: "pay", inputs: [], outputs: [] }] as const;
@@ -109,9 +100,8 @@ const READ_ABI = [
 // faucet. Accounts and the paymaster are funded by people, not by the playground.
 interface Env {
   rpc: string;
+  /** SphincsFrameValidator: every playground account's validator, and its nonce key. */
   validator: Hex;
-  /** SphincsFrameValidator, when deployed. */
-  pqValidator: Hex | null;
   pqVerifier: Hex | null;
   factory: Hex;
   /** The common paymaster, deployed by scripts/deploy-factory.ts. */
@@ -120,7 +110,7 @@ interface Env {
   impl: Hex;
 }
 
-const ENV_KEYS = ["DEVNET_RPC", "ECDSAFRAMEVALIDATOR_ADDRESS", "SPHINCSFRAMEVALIDATOR_ADDRESS", "SPHINCSVERIFIER_ADDRESS", "ERC8286ACCOUNTFACTORY_ADDRESS", "ERC8286FRAMEACCOUNT_ADDRESS", "PAYMASTER_ADDRESS"] as const;
+const ENV_KEYS = ["DEVNET_RPC", "SPHINCSFRAMEVALIDATOR_ADDRESS", "SPHINCSVERIFIER_ADDRESS", "ERC8286ACCOUNTFACTORY_ADDRESS", "ERC8286FRAMEACCOUNT_ADDRESS", "PAYMASTER_ADDRESS"] as const;
 
 /** Addresses from the network's env file when developing, from the environment when deployed
  * (Vercel project settings); the environment wins. No key is read anywhere. */
@@ -135,12 +125,11 @@ function loadEnv(): Env | null {
     }
   }
   for (const k of ENV_KEYS) if (process.env[k]) kv[k] = process.env[k]!;
-  const need = ["ECDSAFRAMEVALIDATOR_ADDRESS", "ERC8286ACCOUNTFACTORY_ADDRESS", "ERC8286FRAMEACCOUNT_ADDRESS", "PAYMASTER_ADDRESS"];
+  const need = ["SPHINCSFRAMEVALIDATOR_ADDRESS", "ERC8286ACCOUNTFACTORY_ADDRESS", "ERC8286FRAMEACCOUNT_ADDRESS", "PAYMASTER_ADDRESS"];
   if (need.some((k) => !kv[k])) return null;
   return {
     rpc: kv.DEVNET_RPC ?? "https://rpc1.privacy.ethrex.xyz",
-    validator: getAddress(kv.ECDSAFRAMEVALIDATOR_ADDRESS!),
-    pqValidator: kv.SPHINCSFRAMEVALIDATOR_ADDRESS ? getAddress(kv.SPHINCSFRAMEVALIDATOR_ADDRESS) : null,
+    validator: getAddress(kv.SPHINCSFRAMEVALIDATOR_ADDRESS!),
     pqVerifier: kv.SPHINCSVERIFIER_ADDRESS ? getAddress(kv.SPHINCSVERIFIER_ADDRESS) : null,
     factory: getAddress(kv.ERC8286ACCOUNTFACTORY_ADDRESS!),
     paymaster: getAddress(kv.PAYMASTER_ADDRESS!),
@@ -255,21 +244,10 @@ async function resolveClone(env: Env, account: Hex, clone: CloneSpec | null): Pr
 
 const sending = new Map<string, Promise<unknown>>();
 
-/** The validator an account of this kind selects through nonce_keys[0]. */
-function validatorFor(env: Env, signer: Signer): Hex {
-  if (signer === "wallet") return env.validator;
-  if (!env.pqValidator) throw new Error("SPHINCSFRAMEVALIDATOR_ADDRESS missing: run npm run deploy:pq:testnet");
-  return env.pqValidator;
-}
-
-async function keyedNonce(env: Env, account: Hex, signer: Signer): Promise<number> {
-  const stored = await rpc<Hex>(env.rpc, "eth_getStorageAt", [nonceManagerFor(CHAIN_ID), nonceSlot(account, BigInt(validatorFor(env, signer))), "latest"]);
+/** The account's sequence under nonce key = the validator, which nonce_keys[0] selects. */
+async function keyedNonce(env: Env, account: Hex): Promise<number> {
+  const stored = await rpc<Hex>(env.rpc, "eth_getStorageAt", [nonceManagerFor(CHAIN_ID), nonceSlot(account, BigInt(env.validator)), "latest"]);
   return Number(BigInt(stored ?? "0x0"));
-}
-
-async function ownerOf(env: Env, account: Hex): Promise<Hex> {
-  const word = await rpc<Hex>(env.rpc, "eth_getStorageAt", [account, OWNER_SLOT, "latest"]);
-  return getAddress(`0x${word.slice(-40)}`);
 }
 
 async function pqKeyOf(env: Env, account: Hex): Promise<{ pkSeed: Hex; pkRoot: Hex }> {
@@ -280,12 +258,10 @@ async function pqKeyOf(env: Env, account: Hex): Promise<{ pkSeed: Hex; pkRoot: H
   return { pkSeed: pkSeed.toLowerCase() as Hex, pkRoot: pkRoot.toLowerCase() as Hex };
 }
 
-/** Which current validator an account has installed, if any. */
-async function signerOf(env: Env, account: Hex): Promise<Signer | null> {
+/** Whether the account has the playground's validator installed. */
+async function hasValidator(env: Env, account: Hex): Promise<boolean> {
   const { pub } = clients(env);
-  const installed = (v: Hex) => pub.readContract({ address: account, abi: READ_ABI, functionName: "isValidatorInstalled", args: [v] });
-  const [ecdsa, pq] = await Promise.all([installed(env.validator), env.pqValidator ? installed(env.pqValidator) : false]);
-  return ecdsa ? "wallet" : pq ? "pq" : null;
+  return pub.readContract({ address: account, abi: READ_ABI, functionName: "isValidatorInstalled", args: [env.validator] });
 }
 
 /** A clone's configuration: validator (20) || scopes (1) || modeBits (1) || route (1) || initData. */
@@ -307,22 +283,19 @@ function configFromCode(code: Hex): Hex | null {
   if (!code.toLowerCase().startsWith(CLONE_PREFIX) || (code.length - 2) / 2 < CLONE_CODE_LEN + CONFIG_HEADER) return null;
   return `0x${code.slice(2 + CLONE_CODE_LEN * 2)}` as Hex;
 }
-/** Who a configuration belongs to: the wallet address, or the post-quantum key expanded to its two words. */
-function ownerFromConfig(env: Env, cfg: CloneConfig): { signer: Signer | null; owner: string; pkSeed: Hex | null } {
-  if (cfg.validator === env.validator) return { signer: "wallet", owner: getAddress(`0x${cfg.initData.slice(2, 42)}`), pkSeed: null };
-  if (env.pqValidator && cfg.validator === env.pqValidator) {
-    const seed = cfg.initData.slice(2, 34);
-    const root = cfg.initData.slice(34, 66);
-    return { signer: "pq", owner: `0x${root}${"0".repeat(32)}`, pkSeed: `0x${seed}${"0".repeat(32)}` };
-  }
-  return { signer: null, owner: "0x", pkSeed: null };
+/** The post-quantum key a configuration belongs to, expanded to its two words; null for any
+ * other validator (an ECDSA wallet account, or an earlier deployment). */
+function ownerFromConfig(env: Env, cfg: CloneConfig): { owner: string; pkSeed: Hex } | null {
+  if (cfg.validator !== env.validator) return null;
+  const seed = cfg.initData.slice(2, 34);
+  const root = cfg.initData.slice(34, 66);
+  return { owner: `0x${root}${"0".repeat(32)}`, pkSeed: `0x${seed}${"0".repeat(32)}` };
 }
 
 interface AccountView {
   address: Hex;
   balance: bigint;
   nonce: number;
-  signer: Signer;
   owner: string;
   pkSeed: Hex | null;
   stale: boolean;
@@ -346,9 +319,8 @@ async function readAccount(env: Env, addr: Hex, clone: CloneSpec | null): Promis
   }
   const cfg = parseConfig(argsHex);
   const who = ownerFromConfig(env, cfg);
-  const signer: Signer = who.signer ?? "wallet";
   const read = <T>(functionName: "approvalScopes" | "executionRoute") => pub.readContract({ address: addr, abi: READ_ABI, functionName }) as Promise<T>;
-  const [balance, nonce] = await Promise.all([pub.getBalance({ address: addr }), who.signer ? keyedNonce(env, addr, signer) : 0]);
+  const [balance, nonce] = await Promise.all([pub.getBalance({ address: addr }), who ? keyedNonce(env, addr) : 0]);
   // Settings may have been changed since creation, so a deployed account is asked; an
   // undeployed one can only have what its configuration says.
   const [scopes, route, ...modes] = deployed
@@ -363,11 +335,10 @@ async function readAccount(env: Env, addr: Hex, clone: CloneSpec | null): Promis
     clone,
     balance,
     nonce,
-    signer,
-    owner: who.owner,
-    pkSeed: who.pkSeed,
-    // Configured for an earlier validator: not usable from this playground.
-    stale: who.signer === null,
+    owner: who?.owner ?? "0x",
+    pkSeed: who?.pkSeed ?? null,
+    // Configured for another validator: not usable from this playground.
+    stale: who === null,
     deployed,
     scopes: Number(scopes),
     route: Number(route),
@@ -379,13 +350,11 @@ async function readAccount(env: Env, addr: Hex, clone: CloneSpec | null): Promis
 async function readLegacyAccount(env: Env, addr: Hex): Promise<AccountView> {
   const { pub } = clients(env);
   const read = <T>(functionName: "approvalScopes" | "executionRoute") => pub.readContract({ address: addr, abi: READ_ABI, functionName }) as Promise<T>;
-  const installed = await signerOf(env, addr);
-  const signer: Signer = installed ?? "wallet";
-  const [balance, nonce, owner, pq, scopes, route, ...modes] = await Promise.all([
+  const installed = await hasValidator(env, addr);
+  const [balance, nonce, pq, scopes, route, ...modes] = await Promise.all([
     pub.getBalance({ address: addr }),
-    installed ? keyedNonce(env, addr, signer) : 0,
-    signer === "wallet" ? ownerOf(env, addr) : pqKeyOf(env, addr).then((k) => k.pkRoot),
-    signer === "pq" ? pqKeyOf(env, addr) : null,
+    installed ? keyedNonce(env, addr) : 0,
+    installed ? pqKeyOf(env, addr) : null,
     read<number>("approvalScopes"),
     read<number>("executionRoute"),
     ...MODE_NAMES.map((n) => pub.readContract({ address: addr, abi: READ_ABI, functionName: "isExecutionModeSupported", args: [FRAME_MODES[n]] })),
@@ -394,12 +363,11 @@ async function readLegacyAccount(env: Env, addr: Hex): Promise<AccountView> {
     address: addr,
     balance,
     nonce,
-    signer,
-    owner,
+    owner: pq?.pkRoot ?? "0x",
     pkSeed: pq?.pkSeed ?? null,
-    // Deployed against an earlier validator: its digest differs and it is not the nonce key
-    // this playground uses, so verify() would revert. Such accounts are shown but not usable.
-    stale: installed === null,
+    // Deployed against another validator: it is not the nonce key this playground uses, so
+    // verify() would revert. Such accounts are shown but not usable.
+    stale: !installed,
     deployed: true,
     clone: null,
     scopes: Number(scopes),
@@ -418,24 +386,14 @@ async function deploy(env: Env, body: Record<string, unknown>) {
   if (names.length === 0) throw new Error("pick at least one frame shape");
 
   const { pub } = clients(env);
-  // The configuration goes into the clone's code: a post-quantum account names
-  // SphincsFrameValidator and its packed public key, a wallet account names
-  // ECDSAFrameValidator and the wallet address.
-  const signer: Signer = body.signer === "pq" ? "pq" : "wallet";
-  let owner: string;
-  let initData: Hex;
-  if (signer === "pq") {
-    const pkSeed = word(body.pkSeed, "pkSeed");
-    const pkRoot = word(body.pkRoot, "pkRoot");
-    if (!/^0x[0-9a-f]{32}0{32}$/.test(pkSeed) || !/^0x[0-9a-f]{32}0{32}$/.test(pkRoot) || BigInt(pkRoot) === 0n) throw new Error("malformed SPHINCS public key");
-    owner = pkRoot;
-    initData = `0x${pkSeed.slice(2, 34)}${pkRoot.slice(2, 34)}`;
-  } else {
-    owner = address(body.owner, "owner address");
-    initData = owner as Hex;
-  }
+  // The configuration goes into the clone's code: SphincsFrameValidator and the packed public
+  // key, pkSeed || pkRoot, 16 bytes each.
+  const pkSeed = word(body.pkSeed, "pkSeed");
+  const pkRoot = word(body.pkRoot, "pkRoot");
+  if (!/^0x[0-9a-f]{32}0{32}$/.test(pkSeed) || !/^0x[0-9a-f]{32}0{32}$/.test(pkRoot) || BigInt(pkRoot) === 0n) throw new Error("malformed SPHINCS public key");
+  const initData: Hex = `0x${pkSeed.slice(2, 34)}${pkRoot.slice(2, 34)}`;
   const modeBits = names.reduce((n, m) => n | MODE_BIT[m], 0);
-  const args = encodePacked(["address", "uint8", "uint8", "uint8", "bytes"], [validatorFor(env, signer), scopes, modeBits, route, initData]);
+  const args = encodePacked(["address", "uint8", "uint8", "uint8", "bytes"], [env.validator, scopes, modeBits, route, initData]);
   const salt = keccak256(encodePacked(["uint256", "bytes"], [BigInt(Date.now()) * 1_000_000n + BigInt(Math.floor(Math.random() * 1_000_000)), args]));
   const implementation = env.impl;
   const addr = getAddress(await pub.readContract({ address: env.factory, abi: FACTORY_ABI, functionName: "predict", args: [implementation, args, salt] }));
@@ -524,19 +482,18 @@ function parseFees(v: unknown): Fees {
  * VERIFY frame's data only names that entry.
  */
 function buildTx(env: Env, p: Plan, nonce: number, fees: Fees, signature?: Hex): FrameTx {
-  const signer = p.view.signer;
   return new FrameTx({
     chainId: CHAIN_ID,
-    nonceKeys: [BigInt(validatorFor(env, signer))],
+    nonceKeys: [BigInt(env.validator)],
     nonceSeq: nonce,
     sender: p.account,
     frames: [
-      ...(!p.view.deployed && p.view.clone ? [deployFrame(env, p.view.clone, signer)] : []),
+      ...(!p.view.deployed && p.view.clone ? [deployFrame(env, p.view.clone)] : []),
       new Frame({
         mode: FrameMode.VERIFY,
         flags: p.scope,
         target: p.account,
-        gasLimit: VERIFY_GAS[signer],
+        gasLimit: VERIFY_GAS,
         // Approving payment bumps the sender's nonce, and that slot's state gas is charged
         // to whichever frame approves payment.
         stateGasLimit: p.payer ? 0 : KEYED_NONCE_STATE_GAS,
@@ -562,36 +519,31 @@ function buildTx(env: Env, p: Plan, nonce: number, fees: Fees, signature?: Hex):
   });
 }
 
-/** What the owner signs: a wallet gets typed data carrying sig_hash, a post-quantum key
- * sig_hash itself. The nonce and fees come back to /send unchanged. */
+/** What the key signs: sig_hash. The nonce and fees come back to /send unchanged. */
 async function prepare(env: Env, p: Plan) {
-  const signer = p.view.signer;
-  const nonce = await keyedNonce(env, p.account, signer);
+  const nonce = await keyedNonce(env, p.account);
   const block = await rpc<{ baseFeePerGas?: Hex }>(env.rpc, "eth_getBlockByNumber", ["latest", false]);
   const maxPriorityFee = 1_000_000_000n;
   const fees = { maxPriorityFee, maxFee: BigInt(block.baseFeePerGas ?? "0x0") * 2n + maxPriorityFee };
   const tx = buildTx(env, p, nonce, fees);
-  // Wallets want domain.chainId as a number; every other bigint is fine as a decimal string.
-  const td = authTypedData(tx);
-  const typedData = { ...td, domain: { ...td.domain, chainId: CHAIN_ID } };
-  return { nonce, signer, typedData, digest: tx.sigHash(), fees: { maxFee: fees.maxFee.toString(), maxPriorityFee: fees.maxPriorityFee.toString() } };
+  return { nonce, digest: tx.sigHash(), fees: { maxFee: fees.maxFee.toString(), maxPriorityFee: fees.maxPriorityFee.toString() } };
 }
 
 /** Refuses an account configured for a validator this playground does not sign for. */
 async function assertCurrent(env: Env, account: Hex, clone: CloneSpec | null): Promise<AccountView> {
   const view = await readAccount(env, account, await resolveClone(env, account, clone));
-  if (view.stale) throw new Error("this account was deployed with an earlier validator; deploy a new one");
+  if (view.stale) throw new Error("this account uses a validator the playground no longer signs for; create a new one");
   return view;
 }
 
 /** The DEFAULT frame that creates a counterfactual account, first in the transaction. */
-function deployFrame(env: Env, clone: CloneSpec, signer: Signer): Frame {
+function deployFrame(env: Env, clone: CloneSpec): Frame {
   return new Frame({
     mode: FrameMode.DEFAULT,
     flags: 0,
     target: env.factory,
     gasLimit: DEPLOY_GAS,
-    stateGasLimit: DEPLOY_STATE_GAS[signer],
+    stateGasLimit: DEPLOY_STATE_GAS,
     data: encodeFunctionData({ abi: FACTORY_ABI, functionName: "createAccount", args: [clone.implementation, clone.args, clone.salt] }),
   });
 }
@@ -605,20 +557,18 @@ async function parsePayer(env: Env, v: unknown): Promise<Hex | null> {
 
 function tampered(signature: Hex): Hex {
   const bytes = hexToBytes(signature);
-  bytes[0] = (bytes[0] ?? 0) ^ 0xff; // ecrecover yields someone else; SPHINCS's R no longer matches
+  bytes[0] = (bytes[0] ?? 0) ^ 0xff; // SPHINCS's R no longer matches, so the hypertree misses pkRoot
   return bytesToHex(bytes);
 }
 
 async function send(env: Env, body: Record<string, unknown>) {
   const p = await plan(env, body);
   const { account, payer, view } = p;
-  const signer = view.signer;
-  const nonce = await keyedNonce(env, account, signer);
+  const nonce = await keyedNonce(env, account);
 
   // The owner signed sig_hash over a nonce and fees; if a block moved the nonce since, the
   // signature is for a different transaction and must be redone.
-  const sigLen = signer === "pq" ? SPHINCS_SIG_LEN : 65;
-  if (typeof body.signature !== "string" || !new RegExp(`^0x[0-9a-fA-F]{${sigLen * 2}}$`).test(body.signature)) throw new Error(`signature must be ${sigLen} bytes`);
+  if (typeof body.signature !== "string" || !new RegExp(`^0x[0-9a-fA-F]{${SPHINCS_SIG_LEN * 2}}$`).test(body.signature)) throw new Error(`signature must be ${SPHINCS_SIG_LEN} bytes`);
   if (Number(body.nonce) !== nonce) throw new Error(`nonce moved to ${nonce}; sign again`);
   let signature = body.signature as Hex;
   if (p.tamper) signature = tampered(signature);
@@ -635,7 +585,7 @@ async function send(env: Env, body: Record<string, unknown>) {
   if (!sim.valid) return { sim, nonce, hash: null };
   const hash = await rpc<Hex>(env.rpc, "eth_sendRawTransaction", [raw]);
   await Promise.allSettled(peers(env.rpc).map((u) => rpc(u, "eth_sendRawTransaction", [raw])));
-  return { sim, nonce, signer, hash, account, payer, deploys: !view.deployed, gasLimits: tx.frames.map((f) => Number(f.gasLimit)) };
+  return { sim, nonce, hash, account, payer, deploys: !view.deployed, gasLimits: tx.frames.map((f) => Number(f.gasLimit)) };
 }
 
 // ---------------------------------------------------------------- history
@@ -783,11 +733,11 @@ function reply(res: ServerResponse, status: number, body: unknown): void {
 }
 
 /** Holds the account's send lock until its keyed nonce moves past `nonce` (or 40s). */
-function holdUntilMined(env: Env, account: Hex, signer: Signer, nonce: number): void {
+function holdUntilMined(env: Env, account: Hex, nonce: number): void {
   const start = Date.now();
   void (async () => {
     while (Date.now() - start < 40_000) {
-      if ((await keyedNonce(env, account, signer).catch(() => nonce)) > nonce) break;
+      if ((await keyedNonce(env, account).catch(() => nonce)) > nonce) break;
       await new Promise((r) => setTimeout(r, 1500));
     }
     sending.delete(account);
@@ -804,7 +754,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse, next: ()
     if (url.pathname === "/api/pg/info" && req.method === "GET") {
       const { pub } = clients(env);
       const head = await pub.getBlockNumber();
-      return reply(res, 200, { chainId: CHAIN_ID, rpc: env.rpc, validator: env.validator, pqValidator: env.pqValidator, factory: env.factory, paymaster: env.paymaster, head });
+      return reply(res, 200, { chainId: CHAIN_ID, rpc: env.rpc, validator: env.validator, factory: env.factory, paymaster: env.paymaster, head });
     }
 
     if (url.pathname === "/api/pg/account" && req.method === "GET") {
@@ -845,7 +795,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse, next: ()
       sending.set(account, work);
       try {
         const out = await work;
-        if (out.hash) holdUntilMined(env, account, out.signer, out.nonce);
+        if (out.hash) holdUntilMined(env, account, out.nonce);
         else sending.delete(account);
         return reply(res, 200, out);
       } catch (e) {

@@ -1,10 +1,9 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { ArrowLeft, Wallet } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ToastProvider, toastManager } from "@/components/ui/toast";
 import { api, execute, frameLabel, short, toWei, transfer, DEAD, DORA, FAUCET, SCOPE_WORD, type Account, type FrameSpec, type Info, type Paymaster, type Prepared, type Receipt, type SentFrame, type Sim, type VerifySpec, PRESETS } from "@/lib/api";
-import { connectWallet, describeError, hasWallet, onAccountsChanged, signTypedData } from "@/lib/wallet";
 import { findPqKey, onPqKeysChanged, pqKeys, pqSign } from "@/lib/pq";
 import { accountQuery, onStoredAccountsChanged, rememberAccount, storedAccounts } from "@/lib/accounts";
 import { CopyAddress } from "@/components/CopyAddress";
@@ -31,8 +30,6 @@ export function App() {
   const [view, setView] = useState<View>("wallet");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [info, setInfo] = useState<Info | null>(null);
-  const [wallet, setWallet] = useState<string | null>(null);
-  const [connecting, setConnecting] = useState(false);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [active, setActive] = useState<string | null>(null);
   const [paymaster, setPaymaster] = useState<Paymaster | null>(null);
@@ -51,13 +48,8 @@ export function App() {
   const payer = usePaymaster ? paymaster : null;
   const latest = runs[0] ?? null;
   const current = runs.find((r) => r.id === shownRun) ?? latest;
-  /** Who can sign for the selected account here: the connected wallet, a post-quantum key in
-   * this browser, or nobody present. */
-  const signer: "wallet" | "pq" | "other" =
-    account === null ? "other"
-    : account.signer === "pq" ? (findPqKey(account.owner) ? "pq" : "other")
-    : wallet && wallet.toLowerCase() === account.owner.toLowerCase() ? "wallet"
-    : "other";
+  /** The post-quantum key that signs for the selected account, if this browser holds it. */
+  const key = account ? findPqKey(account.owner) : null;
 
   useEffect(() => {
     void (async () => {
@@ -68,7 +60,6 @@ export function App() {
         toastManager.add({ type: "error", title: "Playground server", description: e instanceof Error ? e.message : String(e) });
       }
     })();
-    onAccountsChanged(setWallet);
   }, []);
 
   // The accounts this browser created, from its own list; the server reads each one's live
@@ -87,17 +78,6 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storedKey]);
 
-  const connect = async () => {
-    setConnecting(true);
-    try {
-      setWallet(await connectWallet(info?.rpc ?? "https://rpc1.privacy.ethrex.xyz"));
-    } catch (e) {
-      toastManager.add({ type: "error", title: "Wallet", description: describeError(e) });
-    } finally {
-      setConnecting(false);
-    }
-  };
-
   const refreshAccount = async (address: string) => {
     const clone = stored.find((s) => s.address === address)?.clone ?? accounts.find((x) => x.address === address)?.clone;
     const a = await api<Account>(`/api/pg/account?${accountQuery(address, clone)}`);
@@ -105,11 +85,11 @@ export function App() {
   };
 
   const onDeployed = (a: Account) => {
-    if (a.clone) rememberAccount({ address: a.address, signer: a.signer, owner: a.owner, clone: a.clone });
+    if (a.clone) rememberAccount({ address: a.address, owner: a.owner, clone: a.clone });
     setAccounts((xs) => [a, ...xs.filter((x) => x.address !== a.address)]);
     setActive(a.address);
     setView("wallet");
-    toastManager.add({ type: "success", title: "Account address reserved", description: `${short(a.address)} owned by ${a.signer === "pq" ? "post-quantum key" : "wallet"} ${short(a.owner)}. Fund it at the faucet, or let the paymaster pay its first transaction.` });
+    toastManager.add({ type: "success", title: "Account address reserved", description: `${short(a.address)} owned by post-quantum key ${short(a.owner)}. Fund it at the faucet, or let the paymaster pay its first transaction.` });
   };
 
   const patchRun = (id: number, patch: Partial<Run>) => setRuns((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -129,7 +109,7 @@ export function App() {
   }, [account?.address, account?.route]);
 
   const send = async () => {
-    if (!account || signer === "other") return;
+    if (!account || !key) return;
     const wire = frames.map((f) => {
       if (f.kind === "transfer") return { kind: "transfer", target: f.target, valueWei: toWei(f.eth), atomic: f.atomic };
       if (f.kind === "execute") return { kind: "execute", calls: f.calls.map((c) => ({ target: c.target, valueWei: toWei(c.eth) })), atomic: f.atomic };
@@ -144,13 +124,12 @@ export function App() {
       payer: payer !== null,
       sentFrames: [
         ...(account.deployed ? [] : [{ mode: "DEFAULT", label: "create the account" } as SentFrame]),
-        { mode: "VERIFY", label: `${SCOPE_WORD[verify.scope]}${account.signer === "pq" ? ", post-quantum signature" : ""}`, scope: verify.scope } as SentFrame,
+        { mode: "VERIFY", label: `${SCOPE_WORD[verify.scope]}, post-quantum signature`, scope: verify.scope } as SentFrame,
         ...(payer ? [{ mode: "PAY", label: `paymaster ${short(payer.address)}`, scope: 1 } as SentFrame] : []),
         ...frames.map((f): SentFrame => ({ mode: "SENDER", label: frameLabel(f), atomic: f.atomic })),
       ],
       status: "signing",
       message: "",
-      pq: account.signer === "pq",
     };
     setRuns((rs) => [run, ...rs]);
     setShownRun(run.id);
@@ -161,11 +140,10 @@ export function App() {
       // must get the same ones back.
       const plan = { account: account.address, verify, frames: wire, clone: account.clone, payer: payer?.address ?? null };
       const prep = await api<Prepared>("/api/pg/prepare", plan);
-      // A wallet signs typed data carrying sig_hash; a post-quantum key signs sig_hash itself,
-      // right here in the browser.
+      // The post-quantum key signs sig_hash itself, right here in the browser.
       const t0 = performance.now();
-      const signature = signer === "pq" ? await pqSign(findPqKey(account.owner)!, prep.digest) : await signTypedData(wallet!, prep.typedData);
-      patchRun(run.id, { signature: { hex: signature, pq: signer === "pq", ms: signer === "pq" ? performance.now() - t0 : undefined } });
+      const signature = await pqSign(key, prep.digest);
+      patchRun(run.id, { signature: { hex: signature, ms: performance.now() - t0 } });
       patchRun(run.id, { status: "simulating" });
       const out = await api<{ sim: Sim; hash: string | null; gasLimits?: number[] }>("/api/pg/send", { ...plan, signature, nonce: prep.nonce, fees: prep.fees });
       if (!out.sim.valid || !out.hash) {
@@ -187,10 +165,9 @@ export function App() {
       }
       patchRun(run.id, { message: "Not mined within 80 s. Check the explorer." });
     } catch (e) {
-      const message = describeError(e);
-      const rejected = /denied|rejected/i.test(message);
-      patchRun(run.id, { status: "error", message: rejected ? "You rejected the signature in the wallet." : message });
-      toastManager.add({ type: "error", title: rejected ? "Signature rejected" : "Send failed", description: rejected ? "Nothing was sent." : message });
+      const message = e instanceof Error ? e.message : String(e);
+      patchRun(run.id, { status: "error", message });
+      toastManager.add({ type: "error", title: "Send failed", description: message });
     } finally {
       setSending(false);
     }
@@ -212,15 +189,6 @@ export function App() {
           )}
           <Badge variant={info ? "success" : "secondary"}>{info ? `Hegota (chain ${info.chainId}) - block ${Number(info.head).toLocaleString("en-US")}` : "connecting..."}</Badge>
           <div className="ms-auto flex items-center gap-3">
-            {wallet ? (
-              <Badge variant="info">
-                <Wallet /> <CopyAddress address={wallet} />
-              </Badge>
-            ) : (
-              <Button variant="outline" size="sm" onClick={() => void connect()} loading={connecting} disabled={!hasWallet()} title={hasWallet() ? undefined : "No wallet found"}>
-                <Wallet /> Connect wallet
-              </Button>
-            )}
             <a className="text-sm text-muted-foreground underline-offset-4 hover:underline" href={FAUCET} target="_blank" rel="noreferrer">
               Faucet
             </a>
@@ -269,10 +237,7 @@ export function App() {
           )}
           {view === "create" && (
             <CreateStep
-              wallet={wallet}
               keys={keys}
-              onConnect={() => void connect()}
-              connecting={connecting}
               onDeployed={onDeployed}
               onCancel={accounts.length > 0 || stored.length > 0 ? () => setView("wallet") : undefined}
             />
@@ -317,9 +282,8 @@ export function App() {
                 verify={verify}
                 frames={frames}
                 payer={payer}
-                signer={signer}
+                canSign={key !== null}
                 sending={sending}
-                onConnect={() => void connect()}
                 onBack={() => setView("transaction")}
                 onSend={() => void send()}
               />

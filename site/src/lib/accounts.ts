@@ -3,12 +3,11 @@
 // the server with every request about an undeployed account, which re-derives the address
 // from it before trusting it.
 
-import type { CloneSpec, Signer } from "./api";
+import type { CloneSpec } from "./api";
 
 export interface StoredAccount {
   address: string;
-  signer: Signer;
-  /** A wallet address, or the pkRoot of a post-quantum key. */
+  /** The pkRoot of the post-quantum key that owns it. */
   owner: string;
   clone: CloneSpec;
   created: string;
@@ -22,7 +21,8 @@ function read(): StoredAccount[] {
   if (cache) return cache;
   try {
     const raw = localStorage.getItem(STORE);
-    cache = raw ? (JSON.parse(raw) as StoredAccount[]) : [];
+    // Wallet-owned accounts came from an earlier version of the playground, which no longer signs for them.
+    cache = raw ? (JSON.parse(raw) as (StoredAccount & { signer?: string })[]).filter((a) => a.signer !== "wallet") : [];
   } catch {
     cache = [];
   }

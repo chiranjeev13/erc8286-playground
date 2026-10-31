@@ -51,7 +51,7 @@ export function TransactionStep({ account, verify, frames, paymaster, payer, onP
               <Radio value="self" disabled={!canSelfPay} />
               <span>
                 <span className="block font-medium">The account itself</span>
-                <span className="block text-sm text-muted-foreground">{account.signer === "pq" ? "One post-quantum signature." : "One wallet signature."}</span>
+                <span className="block text-sm text-muted-foreground">One post-quantum signature.</span>
               </span>
             </Label>
             <Label className="flex items-start gap-3 font-normal">
@@ -89,7 +89,7 @@ export function TransactionStep({ account, verify, frames, paymaster, payer, onP
               <Hint text="account.verify(signature): the account picks its validator, masks the result with the frame's allowed scope, then calls APPROVE">Approval</Hint>
             </CardTitle>
           </div>
-          <CardDescription>{account.signer === "pq" ? "Checks your post-quantum signature and approves." : "Checks your wallet's signature and approves."}</CardDescription>
+          <CardDescription>Checks your post-quantum signature and approves.</CardDescription>
         </CardHeader>
         <CardPanel className="flex flex-wrap items-end gap-8">
           <Field>
@@ -105,7 +105,7 @@ export function TransactionStep({ account, verify, frames, paymaster, payer, onP
           </Field>
           <Label className="flex items-center gap-3 pb-6 font-normal">
             <Switch checked={verify.tamper} onCheckedChange={(c) => setVerify({ tamper: c })} />
-            <Hint text={account.signer === "pq" ? "Flips a byte of the SPHINCS signature's R, so the hypertree no longer reaches pkRoot" : "Flips a byte of the signature so ecrecover yields a different address"}>Break the signature, to see a refusal</Hint>
+            <Hint text="Flips a byte of the SPHINCS signature's R, so the hypertree no longer reaches pkRoot">Break the signature, to see a refusal</Hint>
           </Label>
         </CardPanel>
       </Card>

@@ -271,8 +271,10 @@ The playground in `site/` is a Vite app with a small API. In development the API
 middleware (`site/server/frame-api.ts`); on Vercel the same handler runs as the function
 `api/pg/[[...route]].js` (a stub loading `site/server/vercel-handler.ts`, bundled at build time), with `vercel.json` building the site from the repo root. The server
 holds no key and keeps no state: it reads the chain, predicts addresses, builds and simulates
-frame transactions, and relays the ones the browser signed. The browser remembers the accounts
-it created (address plus clone spec) and the post-quantum keys it generated, in localStorage.
+frame transactions, and relays the ones the browser signed. Every playground account is owned
+by a post-quantum key (`SphincsFrameValidator`); the ECDSA validator is exercised by the scripts
+only. The browser remembers the accounts it created (address plus clone spec) and the
+post-quantum keys it generated, in localStorage.
 
 Deploy the contracts once with the scripts, then give the project these environment
 variables (the values `npm run deploy:factory:testnet` and `deploy:pq:testnet` wrote to
@@ -280,7 +282,6 @@ variables (the values `npm run deploy:factory:testnet` and `deploy:pq:testnet` w
 
 ```
 DEVNET_RPC                      https://rpc1.privacy.ethrex.xyz
-ECDSAFRAMEVALIDATOR_ADDRESS
 SPHINCSFRAMEVALIDATOR_ADDRESS
 ERC8286ACCOUNTFACTORY_ADDRESS
 ERC8286FRAMEACCOUNT_ADDRESS

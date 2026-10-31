@@ -20,8 +20,6 @@ export interface Run {
   sentFrames: SentFrame[];
   status: "signing" | "simulating" | "refused" | "submitted" | "mined" | "reverted" | "error";
   message: string;
-  /** Signed by a post-quantum key in this browser rather than a wallet. */
-  pq?: boolean;
   /** The account's signature, once made. */
   signature?: SignatureInfo;
   hash?: string;
@@ -52,7 +50,7 @@ export const TONE: Record<Run["status"], "info" | "success" | "warning" | "error
 export function ResultStep({ run, history, onAgain, onWallet }: Props) {
   const r = run.receipt;
   const stages = [
-    { name: run.pq ? "Post-quantum signature" : "Wallet signature", state: run.status === "signing" ? "busy" : run.status === "error" ? "bad" : "ok" },
+    { name: "Post-quantum signature", state: run.status === "signing" ? "busy" : run.status === "error" ? "bad" : "ok" },
     { name: "Node simulation", state: run.status === "signing" ? "wait" : run.status === "simulating" ? "busy" : run.status === "refused" || run.status === "error" ? "bad" : "ok" },
     { name: "Submitted", state: run.status === "submitted" || run.status === "mined" || run.status === "reverted" ? "ok" : run.status === "simulating" || run.status === "signing" ? "wait" : "skip" },
     { name: "Mined", state: run.status === "mined" || run.status === "reverted" ? "ok" : run.status === "submitted" ? "busy" : run.status === "simulating" || run.status === "signing" ? "wait" : "skip" },

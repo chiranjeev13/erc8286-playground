@@ -11,7 +11,7 @@ import { Card, CardDescription, CardFooter, CardHeader, CardPanel, CardTitle } f
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Label } from "@/components/ui/label";
 import { Radio, RadioGroup } from "@/components/ui/radio-group";
-import { api, MODES, MODE_WORD, ROUTE_WORD, SIGNER_HINT, type Account, type ModeName } from "@/lib/api";
+import { api, MODES, MODE_WORD, ROUTE_WORD, type Account, type ModeName } from "@/lib/api";
 import { createPqKey, type PqKey } from "@/lib/pq";
 
 const STEPS = ["Owner", "Calls", "Permissions", "Review"] as const;
@@ -88,8 +88,7 @@ export function CreateStep({ keys, onDeployed, onCancel }: Props) {
           {step === 0 && (
             <>
               <p className="text-sm text-muted-foreground">
-                <Hint text={`${SIGNER_HINT}. No elliptic curve anywhere, so breaking it means breaking keccak256.`}>Hash-based, checked by the account itself in its VERIFY frame.</Hint>{" "}
-                The key never leaves this browser and never pays gas.
+                Hash-based, checked by the account itself in its VERIFY frame. The key never leaves this browser and never pays gas.
               </p>
               {keys.length === 0 ? (
                 <Button variant="outline" className="self-start" onClick={() => setKeyRoot(createPqKey().pkRoot)}>

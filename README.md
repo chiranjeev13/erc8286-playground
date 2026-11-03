@@ -16,7 +16,7 @@ SPEC.md           Snapshot of the ERC text
 
 | Contract | Role |
 |---|---|
-| `ERC8286FrameAccount` | The account: both execution routes, chosen at creation; EIP-8141 `verbatim` opcodes |
+| `ERC8286FrameAccount` | The account: both execution routes, chosen at creation and switchable; EIP-8141 `verbatim` opcodes |
 | `ECDSAFrameValidator` | Frame validator (module type `11`) with ECDSA over EIP-712 typed data carrying `sig_hash` |
 | `SphincsFrameValidator` | Post-quantum frame validator: a SPHINCS (hash-based) signature over `sig_hash` itself |
 | `ERC8286AccountFactory` | Creates accounts as clones with their configuration in code; usable from a deploy frame |
@@ -224,10 +224,11 @@ as before. Why this shape: under EIP-8037 a fresh slot costs 97,920 state gas, a
 npm run deploy:factory:testnet   # validators, both implementations, the factory
 ```
 
-One implementation serves both execution routes. The route is part of the configuration and
-fixed for the account's life: on the contract route `execute` opens and `verify` clears the
-execution bit unless every SENDER frame targets the account (ERC-8286 verify step 5); on
-the protocol route `execute` is closed and the protocol calls the targets itself.
+One implementation serves both execution routes. The route is part of the configuration, and
+the account can switch it later with `setExecutionRoute`. On the contract route `execute`
+opens and `verify` clears the execution bit unless every SENDER frame targets the account
+(ERC-8286 verify step 5). On the protocol route `execute` is closed and the protocol calls
+the targets itself.
 
 ### Deploying the sender inside its own transaction
 
@@ -358,10 +359,16 @@ forge test -vv
 
 `executionRoute()` declares how `SENDER` frames execute: `0x00` protocol-dispatched (frames
 call their targets directly) or `0x01` contract-dispatched (every frame targets the account,
-which dispatches through ERC-7579's `execute`). This account is protocol-dispatched: it has
-no `execute`, so all policy lives in validation. Step 5 is what makes contract dispatch a
-guarantee rather than a convention — a subclass that overrides `executionRoute` gets it from
-`verify` unchanged.
+which dispatches through ERC-7579's `execute`). The account starts on the route it was
+created with and can switch with `setExecutionRoute(route)`, sent as a `SENDER` frame to
+itself. That frame targets the account, so it passes step 5 and works on either route. The
+switch needs an execution approval, the same authority `installModule` needs. In the
+playground, Settings > How calls run builds this transaction.
+
+The switch applies from the next frame on, but `verify` has already approved the transaction
+against the old route, so put it in the last `SENDER` frame. Step 5 is what makes contract
+dispatch a guarantee rather than a convention: `verify` reads the route on every
+transaction, so it applies as soon as the account switches.
 
 ## SENDER frame execution modes
 

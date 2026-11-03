@@ -4,12 +4,13 @@ import { CopyAddress } from "@/components/CopyAddress";
 import { Hint } from "@/components/Hint";
 import { PermissionBoxes, ShapeBoxes } from "@/components/PolicyBoxes";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
+import { Label } from "@/components/ui/label";
+import { Radio, RadioGroup } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetDescription, SheetHeader, SheetPanel, SheetPopup, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { ethStr, settingsFrames, FAUCET, MODES, ROUTE_HINT, ROUTE_WORD, type Account, type FrameSpec, type ModeName, type Paymaster } from "@/lib/api";
+import { ethStr, settingsFrames, FAUCET, MODES, type Account, type FrameSpec, type ModeName, type Paymaster } from "@/lib/api";
 
 interface Props {
   /** The selected account, whose on-chain settings can be changed here. */
@@ -58,14 +59,16 @@ export function SettingsSheet({ account, onSettings, paymaster, open, onOpenChan
 function AccountSettings({ account, onSettings }: { account: Account; onSettings: (frames: FrameSpec[]) => void }) {
   const [scopes, setScopes] = useState<string[]>([]);
   const [modes, setModes] = useState<string[]>([]);
+  const [route, setRoute] = useState<"0" | "1">("0");
   useEffect(() => {
     setScopes([account.scopes & 1 ? "1" : "", account.scopes & 2 ? "2" : ""].filter(Boolean));
     setModes(MODES.filter((m) => account.modes[m]));
+    setRoute(account.route === 1 ? "1" : "0");
   }, [account]);
 
   const wantScopes = scopes.reduce((n, s) => n | Number(s), 0);
   const wantModes = Object.fromEntries(MODES.map((m) => [m, modes.includes(m)])) as Record<ModeName, boolean>;
-  const frames = settingsFrames(account, wantScopes, wantModes);
+  const frames = settingsFrames(account, wantScopes, wantModes, Number(route));
   const dropsExecution = (wantScopes & 2) === 0 && (account.scopes & 2) !== 0;
   const canReach = (account.scopes & 2) !== 0;
 
@@ -74,17 +77,26 @@ function AccountSettings({ account, onSettings }: { account: Account; onSettings
       <div>
         <h3 className="flex items-center gap-2 font-medium">Account <CopyAddress address={account.address} /></h3>
         <p className="text-sm text-muted-foreground">
-          <Hint text="Setters are onlySelf: a SENDER frame from the account calls setApprovalScopes / setExecutionMode. Apply builds that transaction; you review and sign it like any other.">
+          <Hint text="Setters are onlySelf: a SENDER frame from the account calls setApprovalScopes / setExecutionMode / setExecutionRoute. Apply builds that transaction; you review and sign it like any other.">
             Changes are a transaction the account sends to itself.
           </Hint>
         </p>
       </div>
       <Field>
-        <FieldLabel>How calls run</FieldLabel>
-        <Hint text={ROUTE_HINT(account.route)} className="self-start">
-          <Badge variant="secondary">{ROUTE_WORD(account.route)}</Badge>
-        </Hint>
-        <FieldDescription>Fixed at creation.</FieldDescription>
+        <FieldLabel>
+          <Hint text="executionRoute(): 0x00 protocol or 0x01 contract. setExecutionRoute switches it.">How calls run</Hint>
+        </FieldLabel>
+        <RadioGroup value={route} onValueChange={(v) => setRoute(v as "0" | "1")} className="gap-3">
+          <Label className="flex items-start gap-3 font-normal">
+            <Radio value="0" />
+            <span className="block font-medium"><Hint text="executionRoute() = 0x00 protocol: each SENDER frame calls its target, no account code runs">Directly</Hint></span>
+          </Label>
+          <Label className="flex items-start gap-3 font-normal">
+            <Radio value="1" />
+            <span className="block font-medium"><Hint text="executionRoute() = 0x01 contract: every SENDER frame calls the account's execute(), which can apply its own rules">Through the account</Hint></span>
+          </Label>
+        </RadioGroup>
+        {Number(route) !== account.route && <FieldDescription>Takes effect once the transaction is mined. The switch goes last, after any other change.</FieldDescription>}
       </Field>
       <Field>
         <FieldLabel>What the account may approve</FieldLabel>

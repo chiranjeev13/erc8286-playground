@@ -81,6 +81,7 @@ const PAY_ABI = [{ type: "function", name: "pay", inputs: [], outputs: [] }] as 
 const SETTINGS_ABI = [
   { type: "function", name: "setApprovalScopes", inputs: [{ type: "uint8" }], outputs: [] },
   { type: "function", name: "setExecutionMode", inputs: [{ type: "bytes32" }, { type: "bool" }], outputs: [] },
+  { type: "function", name: "setExecutionRoute", inputs: [{ type: "uint8" }], outputs: [] },
 ] as const;
 const EXECUTE_ABI = [
   { type: "function", name: "execute", inputs: [{ type: "bytes32" }, { type: "bytes" }], outputs: [], stateMutability: "payable" },
@@ -106,7 +107,7 @@ interface Env {
   factory: Hex;
   /** The common paymaster, deployed by scripts/deploy-factory.ts. */
   paymaster: Hex;
-  /** The clone implementation; the execution route is per account, in its configuration. */
+  /** The clone implementation; the execution route is per account, in its configuration until the account switches it. */
   impl: Hex;
 }
 
@@ -167,7 +168,8 @@ type FrameIn =
   | { kind: "transfer"; target: Hex; valueWei: bigint; atomic: boolean }
   | { kind: "execute"; calls: { target: Hex; valueWei: bigint }[]; atomic: boolean }
   | { kind: "setScopes"; scopes: 1 | 2 | 3; atomic: boolean }
-  | { kind: "setMode"; mode: FrameModeName; supported: boolean; atomic: boolean };
+  | { kind: "setMode"; mode: FrameModeName; supported: boolean; atomic: boolean }
+  | { kind: "setRoute"; route: 0 | 1; atomic: boolean };
 
 function value(v: unknown): bigint {
   const n = BigInt(String(v ?? "0"));
@@ -202,6 +204,11 @@ function parseFrames(v: unknown): FrameIn[] {
     if (f.kind === "setMode") {
       if (!MODE_NAMES.includes(f.mode as FrameModeName)) throw new Error("unknown frame shape");
       return { kind: "setMode", mode: f.mode as FrameModeName, supported: f.supported === true, atomic: f.atomic === true };
+    }
+    if (f.kind === "setRoute") {
+      const route = Number(f.route);
+      if (route !== 0 && route !== 1) throw new Error("route must be 0 or 1");
+      return { kind: "setRoute", route, atomic: f.atomic === true };
     }
     throw new Error("unknown frame kind");
   });
@@ -422,11 +429,14 @@ function senderFrames(account: Hex, frames: FrameIn[]): Frame[] {
     if (f.kind === "transfer") {
       return new Frame({ mode: FrameMode.SENDER, flags, target: f.target, gasLimit: 40_000, stateGasLimit: 200_000, value: f.valueWei });
     }
-    if (f.kind === "setScopes" || f.kind === "setMode") {
+    if (f.kind === "setScopes" || f.kind === "setMode" || f.kind === "setRoute") {
+      // A frame that targets the account passes verify step 5, so these work on either route.
       const data =
         f.kind === "setScopes"
           ? encodeFunctionData({ abi: SETTINGS_ABI, functionName: "setApprovalScopes", args: [f.scopes] })
-          : encodeFunctionData({ abi: SETTINGS_ABI, functionName: "setExecutionMode", args: [FRAME_MODES[f.mode], f.supported] });
+          : f.kind === "setMode"
+            ? encodeFunctionData({ abi: SETTINGS_ABI, functionName: "setExecutionMode", args: [FRAME_MODES[f.mode], f.supported] })
+            : encodeFunctionData({ abi: SETTINGS_ABI, functionName: "setExecutionRoute", args: [f.route] });
       // One SSTORE, possibly a fresh slot: 64 state bytes at 1530 gas.
       return new Frame({ mode: FrameMode.SENDER, flags, target: account, gasLimit: 60_000, stateGasLimit: 120_000, data });
     }

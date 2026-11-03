@@ -3,7 +3,7 @@ import { ArrowLeft } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ToastProvider, toastManager } from "@/components/ui/toast";
-import { api, execute, frameLabel, short, toWei, transfer, DEAD, DORA, FAUCET, SCOPE_WORD, type Account, type FrameSpec, type Info, type Paymaster, type Prepared, type Receipt, type SentFrame, type Sim, type VerifySpec, PRESETS } from "@/lib/api";
+import { api, execute, frameLabel, isSettingsFrame, short, toWei, transfer, DEAD, DORA, FAUCET, SCOPE_WORD, type Account, type FrameSpec, type Info, type Paymaster, type Prepared, type Receipt, type SentFrame, type Sim, type VerifySpec, PRESETS } from "@/lib/api";
 import { findPqKey, onPqKeysChanged, pqKeys, pqSign } from "@/lib/pq";
 import { accountQuery, onStoredAccountsChanged, rememberAccount, storedAccounts } from "@/lib/accounts";
 import { CopyAddress } from "@/components/CopyAddress";
@@ -114,11 +114,12 @@ export function App() {
       if (f.kind === "transfer") return { kind: "transfer", target: f.target, valueWei: toWei(f.eth), atomic: f.atomic };
       if (f.kind === "execute") return { kind: "execute", calls: f.calls.map((c) => ({ target: c.target, valueWei: toWei(c.eth) })), atomic: f.atomic };
       if (f.kind === "setScopes") return { kind: "setScopes", scopes: f.scopes, atomic: f.atomic };
+      if (f.kind === "setRoute") return { kind: "setRoute", route: f.route, atomic: f.atomic };
       return { kind: "setMode", mode: f.mode, supported: f.supported, atomic: f.atomic };
     });
     const run: Run = {
       id: nextRunId(),
-      label: PRESETS.find((p) => p.id === presetId)?.label ?? (frames.some((f) => f.kind === "setScopes" || f.kind === "setMode") ? "Settings" : "Custom"),
+      label: PRESETS.find((p) => p.id === presetId)?.label ?? (frames.some(isSettingsFrame) ? "Settings" : "Custom"),
       account: account.address,
       frames: frames.length,
       payer: payer !== null,

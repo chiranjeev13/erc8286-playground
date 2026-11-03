@@ -78,7 +78,7 @@ export interface Call {
 }
 export interface FrameSpec {
   id: number;
-  kind: "transfer" | "execute" | "setScopes" | "setMode";
+  kind: "transfer" | "execute" | "setScopes" | "setMode" | "setRoute";
   target: Target;
   eth: number;
   atomic: boolean;
@@ -88,6 +88,8 @@ export interface FrameSpec {
   /** setMode */
   mode?: ModeName;
   supported?: boolean;
+  /** setRoute */
+  route?: 0 | 1;
 }
 export interface VerifySpec {
   scope: Scope;
@@ -198,19 +200,25 @@ export const execute = (calls: Call[], atomic = false): FrameSpec => ({ id: next
 
 export const setScopesFrame = (scopes: 1 | 2 | 3): FrameSpec => ({ id: nextId(), kind: "setScopes", target: DEAD, eth: 0, atomic: false, calls: [], scopes });
 export const setModeFrame = (mode: ModeName, supported: boolean): FrameSpec => ({ id: nextId(), kind: "setMode", target: DEAD, eth: 0, atomic: false, calls: [], mode, supported });
+export const setRouteFrame = (route: 0 | 1): FrameSpec => ({ id: nextId(), kind: "setRoute", target: DEAD, eth: 0, atomic: false, calls: [], route });
 
-/** The SENDER frames that take an account from its current settings to the wanted ones. */
-export function settingsFrames(a: Account, scopes: number, modes: Record<ModeName, boolean>): FrameSpec[] {
+/** The SENDER frames that take an account from its current settings to the wanted ones. The
+ * route switch goes last: verify approved the transaction under the old route. */
+export function settingsFrames(a: Account, scopes: number, modes: Record<ModeName, boolean>, route: number): FrameSpec[] {
   const out: FrameSpec[] = [];
   if (scopes !== a.scopes && (scopes === 1 || scopes === 2 || scopes === 3)) out.push(setScopesFrame(scopes));
   for (const m of MODES) if (modes[m] !== a.modes[m]) out.push(setModeFrame(m, modes[m]));
+  if (route !== a.route && (route === 0 || route === 1)) out.push(setRouteFrame(route));
   return out;
 }
+
+export const isSettingsFrame = (f: FrameSpec) => f.kind === "setScopes" || f.kind === "setMode" || f.kind === "setRoute";
 
 /** One line describing what a frame does, in plain words. */
 export function frameLabel(f: FrameSpec): string {
   if (f.kind === "setScopes") return `Set approval to: ${SCOPE_WORD[f.scopes!].toLowerCase()}`;
   if (f.kind === "setMode") return `${f.supported ? "Allow" : "Disallow"}: ${MODE_WORD[f.mode!].toLowerCase()}`;
+  if (f.kind === "setRoute") return `Switch to: ${ROUTE_WORD(f.route!).toLowerCase()}`;
   if (f.kind === "execute") return `${f.calls.length} call${f.calls.length > 1 ? "s" : ""} through the account: ${f.calls.map((c) => `${c.eth} ETH to ${short(c.target)}`).join(", ")}`;
   return `${f.eth} ETH to ${short(f.target)}`;
 }
@@ -219,6 +227,7 @@ export function frameLabel(f: FrameSpec): string {
 export function frameHint(f: FrameSpec): string {
   if (f.kind === "setScopes") return `SENDER frame -> account.setApprovalScopes(0x${f.scopes})`;
   if (f.kind === "setMode") return `SENDER frame -> account.setExecutionMode(${f.mode}, ${f.supported})`;
+  if (f.kind === "setRoute") return `SENDER frame -> account.setExecutionRoute(0x0${f.route})`;
   if (f.kind === "execute") return "SENDER frame -> account.execute(batch mode)";
   return "SENDER frame -> target, caller = tx.sender";
 }
@@ -259,6 +268,10 @@ export function expectation(a: Account, v: VerifySpec, frames: FrameSpec[], paye
   const spend = frames.reduce((n, f) => n + (f.kind === "transfer" ? f.eth : f.kind === "execute" ? f.calls.reduce((m, c) => m + c.eth, 0) : 0), 0);
   if (spend > Number(BigInt(a.balance)) / 1e18) {
     return { tone: "warning", text: `The calls move ${spend} ETH but the account holds ${ethStr(a.balance)} ETH. The transaction is still valid: the frame that runs out of funds fails on its own, and gas is paid.` };
+  }
+  const routeAt = frames.findIndex((f) => f.kind === "setRoute");
+  if (routeAt !== -1 && routeAt !== frames.length - 1) {
+    return { tone: "warning", text: "Put the route change last. The frames after it were approved under the old route, so once the account runs calls directly, calls through the account fail." };
   }
   const newScopes = frames.find((f) => f.kind === "setScopes")?.scopes;
   if (newScopes !== undefined && (newScopes & 2) === 0) return { tone: "warning", text: "This removes the account's ability to execute. That cannot be undone: it could never change its own settings again." };

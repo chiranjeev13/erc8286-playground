@@ -38,10 +38,9 @@ contract ERC8286FrameAccount is IERC8286FrameAccount, IERC7579Execution {
     uint8 private constant MODE_SUPPORTED = 1;
     uint8 private constant MODE_UNSUPPORTED = 2;
 
-    /// @dev The execution route of an account deployed with its constructor; a clone's is in
-    /// its code. Fixed for the account's life: changing it would change what every
-    /// validator must check.
-    uint8 private _executionRoute;
+    /// @dev Storage override of the execution route, stored as route + 1 so that zero means
+    /// "as configured in code". An account deployed with its constructor always has one.
+    uint8 private _routeOverride;
 
     function isValidatorInstalled(address module) public view returns (bool) {
         if (_installed[module]) return true;
@@ -64,6 +63,7 @@ contract ERC8286FrameAccount is IERC8286FrameAccount, IERC7579Execution {
 
     event ApprovalScopesUpdated(uint8 approvalScopes);
     event ExecutionModeUpdated(bytes32 mode, bool supported);
+    event ExecutionRouteUpdated(uint8 executionRoute);
 
     modifier onlySelf() {
         require(msg.sender == address(this), "unauthorized");
@@ -97,6 +97,11 @@ contract ERC8286FrameAccount is IERC8286FrameAccount, IERC7579Execution {
     /// calls SENDER frames' targets itself and nothing should route through here.
     modifier onlyContractRoute() {
         require(executionRoute() == LibERC8286.EXECUTION_ROUTE_CONTRACT, "protocol-dispatched account");
+        _;
+    }
+
+    modifier onlyKnownRoute(uint8 route) {
+        require(route <= LibERC8286.EXECUTION_ROUTE_CONTRACT, "unknown execution route");
         _;
     }
 
@@ -141,8 +146,7 @@ contract ERC8286FrameAccount is IERC8286FrameAccount, IERC7579Execution {
     ) internal {
         require(validator != address(0), "validator required");
         require(executionModes_.length != 0, "no modes");
-        require(executionRoute_ <= LibERC8286.EXECUTION_ROUTE_CONTRACT, "unknown execution route");
-        _executionRoute = executionRoute_;
+        _setExecutionRoute(executionRoute_);
         _setApprovalScopes(approvalScopes_);
         for (uint256 i = 0; i < executionModes_.length; i++) {
             _setExecutionMode(executionModes_[i], true);
@@ -173,6 +177,23 @@ contract ERC8286FrameAccount is IERC8286FrameAccount, IERC7579Execution {
         require(LibERC8286.isFrameMode(mode), "not a frame mode");
         _modeOverride[mode] = supported ? MODE_SUPPORTED : MODE_UNSUPPORTED;
         emit ExecutionModeUpdated(mode, supported);
+    }
+
+    /// @dev Switches between the protocol route (0x00) and the contract route (0x01). Needs an
+    /// execution approval, the same authority `installModule` needs, so it grants nothing new.
+    ///
+    /// The switch applies from the next frame on, but the VERIFY frame has already approved
+    /// this transaction against the old route. Leaving the contract route: the remaining
+    /// SENDER frames still target the account, and `execute` now reverts. Joining it: the
+    /// remaining frames were approved to call their targets directly and still do. Either
+    /// way nothing escapes a check, but put the switch in the last SENDER frame.
+    function setExecutionRoute(uint8 executionRoute_) external onlySelf {
+        _setExecutionRoute(executionRoute_);
+    }
+
+    function _setExecutionRoute(uint8 executionRoute_) internal onlyKnownRoute(executionRoute_) {
+        _routeOverride = executionRoute_ + 1;
+        emit ExecutionRouteUpdated(executionRoute_);
     }
 
     /// @dev The account pays its own gas and SENDER frames spend from its balance, so it
@@ -235,12 +256,13 @@ contract ERC8286FrameAccount is IERC8286FrameAccount, IERC7579Execution {
         return approvalMode != LibERC8286.APPROVE_NONE && approvalMode & ~approvalScopes() == 0;
     }
 
-    /// @dev Chosen at creation. Protocol-dispatched (0x00): SENDER frames call their targets
-    /// directly and `execute` is closed. Contract-dispatched (0x01): every SENDER frame must
-    /// target this account and call `execute`, which `verify` enforces.
+    /// @dev Chosen at creation, switchable with `setExecutionRoute`. Protocol-dispatched (0x00):
+    /// SENDER frames call their targets directly and `execute` is closed. Contract-dispatched
+    /// (0x01): every SENDER frame must target this account and call `execute`, which `verify`
+    /// enforces.
     function executionRoute() public view override returns (uint8) {
-        if (LibCloneConfig.isClone()) return LibCloneConfig.executionRoute(LibCloneConfig.args());
-        return _executionRoute;
+        uint8 r = _routeOverride;
+        return r != 0 ? r - 1 : LibCloneConfig.executionRoute(LibCloneConfig.args());
     }
 
     /// @dev The contract route's entrypoint. A SENDER frame targeting this account arrives as a
